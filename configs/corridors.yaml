@@ -1,0 +1,73 @@
+# TopoFlow Corridor Configurations
+# Defines geographic bounding boxes, centroids, mileposts, and directions
+# for the primary study corridor and synthetic control donor corridors.
+
+corridors:
+  alb_i495:
+    corridor_id: "alb_i495"
+    name: "I-495 American Legion Memorial Bridge (Potomac River Sag Crossing)"
+    corridor_type: "study"
+    route: "I-495"
+    state: "VA/MD"
+    mileposts:
+      start: "VA-44.0"
+      end: "MD-41.0"
+    bounding_box:
+      min_lat: 38.95
+      max_lat: 39.00
+      min_lon: -77.23
+      max_lon: -77.18
+    centroid:
+      lat: 38.9697
+      lon: -77.2092
+    directions:
+      - "inner_loop"
+      - "outer_loop"
+
+  i95_lorton_woodbridge:
+    corridor_id: "i95_lorton_woodbridge"
+    name: "I-95 Flat Tangent Control Corridor (Lorton / Woodbridge)"
+    corridor_type: "control"
+    route: "I-95"
+    state: "VA"
+    mileposts:
+      start: "VA-161.0"
+      end: "VA-166.0"
+    bounding_box:
+      min_lat: 38.64
+      max_lat: 38.72
+      min_lon: -77.26
+      max_lon: -77.22
+    centroid:
+      lat: 38.6800
+      lon: -77.2400
+    directions:
+      - "northbound"
+      - "southbound"
+
+  i295_anacostia:
+    corridor_id: "i295_anacostia"
+    name: "I-295 Anacostia Freeway Flat Tangent Control Corridor"
+    corridor_type: "control"
+    route: "I-295"
+    state: "DC/MD"
+    mileposts:
+      start: "DC-1.0"
+      end: "DC-5.0"
+    bounding_box:
+      min_lat: 38.82
+      max_lat: 38.87
+      min_lon: -77.02
+      max_lon: -76.99
+    centroid:
+      lat: 38.8450
+      lon: -77.0050
+    directions:
+      - "northbound"
+      - "southbound"
+
+defaults:
+  elevation_smoothing:
+    savitzky_golay_window: 5
+    polynomial_order: 2
+  spatial_resolution_meters: 100.0
