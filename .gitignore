@@ -9,5 +9,24 @@ wheels/
 # Virtual environments
 .venv
 
+# Testing & Coverage
+.coverage
+.coverage.*
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+
 # Custom
 /docs/private/
+
+# Data directories & analytical marts (remain local / cloud storage only)
+data/raw/*
+!data/raw/**/.gitkeep
+data/interim/*
+!data/interim/**/.gitkeep
+data/processed/*
+!data/processed/**/.gitkeep
+*.parquet
+*.laz
+*.dem
+*.tif
