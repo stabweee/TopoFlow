@@ -23,6 +23,8 @@ from topoflow.geo.osm_extractor import (
     OSMQueryError,
     OSMTopologicalError,
     _classify_direction,
+    _is_deflection_acceptable,
+    _is_managed_or_express_lane,
     _stitch_segments_to_linestring,
     build_overpass_query,
     calculate_metric_length,
@@ -333,3 +335,76 @@ class TestNetworkResilienceAndRetries:
 
         with pytest.raises(OSMQueryError, match="missing 'elements'"):
             fetch_osm_data("dummy_query", timeout=5, max_retries=1)
+
+
+class TestManagedAndExpressLaneFiltering:
+    """Test identification and filtering of managed, express, and reversible lanes."""
+
+    def test_filter_reversible_oneway(self) -> None:
+        way = {"tags": {"oneway": "reversible", "ref": "I 95"}}
+        assert _is_managed_or_express_lane(way) is True
+
+    def test_filter_express_name(self) -> None:
+        way = {"tags": {"name": "95 Express Lanes", "ref": "I 95"}}
+        assert _is_managed_or_express_lane(way) is True
+
+    def test_filter_express_tag(self) -> None:
+        way = {"tags": {"express": "yes", "ref": "I 95"}}
+        assert _is_managed_or_express_lane(way) is True
+
+    def test_filter_hov_hot_tags(self) -> None:
+        way1 = {"tags": {"name": "I-95 HOV Lanes"}}
+        way2 = {"tags": {"name": "HOT Lanes"}}
+        assert _is_managed_or_express_lane(way1) is True
+        assert _is_managed_or_express_lane(way2) is True
+
+    def test_retain_general_purpose_lanes(self) -> None:
+        way = {
+            "tags": {
+                "name": "Henry G. Shirley Memorial Highway",
+                "ref": "I 95",
+                "oneway": "yes",
+                "highway": "motorway",
+            }
+        }
+        assert _is_managed_or_express_lane(way) is False
+
+
+class TestDeflectionAndUTurnGuards:
+    """Test geometric deflection checks preventing cross-median U-turns."""
+
+    def test_deflection_forward_aligned(self) -> None:
+        v_in = (10.0, 10.0)
+        v_out = (10.0, 12.0)
+        assert _is_deflection_acceptable(v_in, v_out, min_cos=0.0) is True
+
+    def test_deflection_opposing_u_turn_rejected(self) -> None:
+        v_in = (10.0, 10.0)  # Heading NE
+        v_out = (-10.0, -10.0)  # Heading SW (180 deg turnaround)
+        assert _is_deflection_acceptable(v_in, v_out, min_cos=0.0) is False
+
+    def test_stitch_rejects_antiparallel_u_turn_segment(self) -> None:
+        # seg1 runs north: (0, 0) -> (0, 1)
+        seg1 = [(0.0, 0.0), (0.0, 1.0)]
+        # seg2 runs south right beside seg1 across median: (0.0001, 1.0) -> (0.0001, 0.0)
+        # Even though distance between (0, 1) and (0.0001, 1) is tiny (< 50m),
+        # appending seg2 into a U-turn is rejected
+        seg2 = [(0.0001, 1.0), (0.0001, 0.0)]
+        with pytest.raises(OSMTopologicalError):
+            _stitch_segments_to_linestring([seg1, seg2], "northbound")
+
+    def test_prepend_reverse_valid(self) -> None:
+        # seg1 is northern half: (0, 1) -> (0, 2)
+        seg1 = [(0.0, 1.0), (0.0, 2.0)]
+        # seg2 is southern half digitized backwards: (0, 1) -> (0, 0)
+        # Prepending seg2 reversed yields (0, 0) -> (0, 1) -> (0, 2)
+        seg2 = [(0.0, 1.0), (0.0, 0.0)]
+        line = _stitch_segments_to_linestring([seg1, seg2], "northbound")
+        coords = list(line.coords)
+        assert len(coords) == 3
+        assert coords[0] == (0.0, 0.0)
+        assert coords[-1] == (0.0, 2.0)
+
+    def test_stitch_segment_fewer_than_two_coords_raises(self) -> None:
+        with pytest.raises(OSMTopologicalError, match="fewer than 2 points"):
+            _stitch_segments_to_linestring([[(0.0, 0.0)], [(0.0, 1.0), (0.0, 2.0)]], "northbound")

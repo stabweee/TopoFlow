@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -226,6 +228,60 @@ def _classify_direction(
     return corridor.directions[0] if corridor.directions else None
 
 
+def _is_managed_or_express_lane(way: dict[str, Any]) -> bool:
+    """Check if an OSM way represents a managed, reversible, HOV, or express facility.
+
+    TopoFlow targets general-purpose highway carriageways. Managed and reversible express
+    lanes (e.g., '95 Express Lanes') have separate median-separated alignments and
+    reversible operations that must not be merged into general-purpose carriageway lines.
+
+    Args:
+        way: OSM way dictionary with 'tags'.
+
+    Returns:
+        True if the way represents an express/reversible/managed facility, False otherwise.
+    """
+    tags = way.get("tags", {})
+    if tags.get("oneway") == "reversible":
+        return True
+    if tags.get("express") in ("yes", "only"):
+        return True
+
+    name = tags.get("name", "")
+    if re.search(r"\b(express|hov|hot)\b", name, re.IGNORECASE):
+        return True
+
+    ref = tags.get("ref", "")
+    return bool(re.search(r"\b(express|hov|hot)\b", ref, re.IGNORECASE))
+
+
+def _is_deflection_acceptable(
+    v_incoming: tuple[float, float],
+    v_outgoing: tuple[float, float],
+    min_cos: float = 0.0,
+) -> bool:
+    """Check if deflection between incoming and outgoing segment vectors is within forward tolerance.
+
+    On a controlled-access interstate highway, consecutive way segments cannot make
+    an acute turnaround or U-turn across medians (interior angle > 90 deg, cos(theta) < 0).
+
+    Args:
+        v_incoming: Direction vector leading into the connection point (dx, dy).
+        v_outgoing: Direction vector leaving the connection point (dx, dy).
+        min_cos: Minimum cosine of deflection angle (defaults to 0.0, i.e. <= 90 deg).
+
+    Returns:
+        True if deflection angle is acceptable, False if it represents a U-turn/reversal.
+    """
+    dot = v_incoming[0] * v_outgoing[0] + v_incoming[1] * v_outgoing[1]
+    mag1 = math.hypot(v_incoming[0], v_incoming[1])
+    mag2 = math.hypot(v_outgoing[0], v_outgoing[1])
+    if mag1 <= 1e-9 or mag2 <= 1e-9:
+        return True
+    cos_theta = dot / (mag1 * mag2)
+    return cos_theta >= min_cos
+
+
 def _stitch_segments_to_linestring(
     segments: list[list[tuple[float, float]]],
     target_direction: str,
@@ -236,6 +292,7 @@ def _stitch_segments_to_linestring(
     Handles way reversal and chain connection. Validates that resulting LineString has
     zero breaks and is oriented along the intended direction of travel. Rejects gaps > 50m
     to prevent cross-median jumps (15-40m wide), interchange ramp leaps, or masking missing bridge spans.
+    Enforces a forward deflection angle constraint (<= 90 deg) preventing median U-turns.
 
     Args:
         segments: List of coordinate lists [(lon, lat), ...].
@@ -253,10 +310,11 @@ def _stitch_segments_to_linestring(
             f"No coordinate segments provided for direction '{target_direction}'"
         )
 
+    if any(len(seg) < 2 for seg in segments):
+        raise OSMTopologicalError("One or more coordinate segments contain fewer than 2 points.")
+
     if len(segments) == 1:
         coords = segments[0]
-        if len(coords) < 2:
-            raise OSMTopologicalError("Segment contains fewer than 2 coordinates.")
         line = LineString(coords)
         return _ensure_directional_bearing(line, target_direction)
 
@@ -264,9 +322,14 @@ def _stitch_segments_to_linestring(
     remaining = [list(seg) for seg in segments]
     stitched: list[tuple[float, float]] = remaining.pop(0)
 
+    max_gap_sq = max_gap_degrees**2
+
     while remaining:
         head = stitched[0]
         tail = stitched[-1]
+
+        v_tail_in = (tail[0] - stitched[-2][0], tail[1] - stitched[-2][1])
+        v_head_out = (stitched[1][0] - head[0], stitched[1][1] - head[1])
 
         best_match_idx = -1
         best_mode: str | None = None
@@ -276,31 +339,58 @@ def _stitch_segments_to_linestring(
             cand_head = candidate[0]
             cand_tail = candidate[-1]
 
+            cand_v_fwd = (candidate[1][0] - cand_head[0], candidate[1][1] - cand_head[1])
+            cand_v_rev = (candidate[-2][0] - cand_tail[0], candidate[-2][1] - cand_tail[1])
+
             # Distances: tail-to-head, tail-to-tail, head-to-tail, head-to-head
             d_tail_head = (tail[0] - cand_head[0]) ** 2 + (tail[1] - cand_head[1]) ** 2
             d_tail_tail = (tail[0] - cand_tail[0]) ** 2 + (tail[1] - cand_tail[1]) ** 2
             d_head_tail = (head[0] - cand_tail[0]) ** 2 + (head[1] - cand_tail[1]) ** 2
             d_head_head = (head[0] - cand_head[0]) ** 2 + (head[1] - cand_head[1]) ** 2
 
-            local_min = min(d_tail_head, d_tail_tail, d_head_tail, d_head_head)
-            if local_min < min_dist:
-                min_dist = local_min
-                best_match_idx = idx
-                if local_min == d_tail_head:
-                    best_mode = "append_normal"
-                elif local_min == d_tail_tail:
-                    best_mode = "append_reverse"
-                elif local_min == d_head_tail:
-                    best_mode = "prepend_normal"
-                else:
-                    best_mode = "prepend_reverse"
+            modes = [
+                (
+                    "append_normal",
+                    d_tail_head,
+                    _is_deflection_acceptable(v_tail_in, cand_v_fwd, min_cos=0.0),
+                ),
+                (
+                    "append_reverse",
+                    d_tail_tail,
+                    _is_deflection_acceptable(v_tail_in, cand_v_rev, min_cos=0.0),
+                ),
+                (
+                    "prepend_normal",
+                    d_head_tail,
+                    _is_deflection_acceptable(
+                        (-cand_v_rev[0], -cand_v_rev[1]),
+                        v_head_out,
+                        min_cos=0.0,
+                    ),
+                ),
+                (
+                    "prepend_reverse",
+                    d_head_head,
+                    _is_deflection_acceptable(
+                        (-cand_v_fwd[0], -cand_v_fwd[1]),
+                        v_head_out,
+                        min_cos=0.0,
+                    ),
+                ),
+            ]
+
+            for mode_name, dist_sq, is_angle_valid in modes:
+                if is_angle_valid and dist_sq < min_dist:
+                    min_dist = dist_sq
+                    best_match_idx = idx
+                    best_mode = mode_name
 
         if best_match_idx < 0:
             raise OSMTopologicalError(
                 f"Failed to find connecting segment in direction '{target_direction}'"
             )
 
-        if min_dist > (max_gap_degrees**2):
+        if min_dist > max_gap_sq:
             raise OSMTopologicalError(
                 f"Topological gap ({min_dist**0.5:.5f} deg) exceeds maximum tolerance "
                 f"({max_gap_degrees} deg) in direction '{target_direction}'"
@@ -417,9 +507,11 @@ class OSMExtractor:
                 f"No highway ways found for corridor '{corridor.corridor_id}'"
             )
 
-        # Group ways by direction
+        # Group ways by direction, excluding managed/express facilities
         directional_ways: dict[str, list[dict[str, Any]]] = {d: [] for d in corridor.directions}
         for way in ways:
+            if _is_managed_or_express_lane(way):
+                continue
             direction = _classify_direction(way, nodes, corridor)
             if direction and direction in directional_ways:
                 directional_ways[direction].append(way)
