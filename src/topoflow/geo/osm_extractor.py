@@ -56,10 +56,10 @@ def build_overpass_query(corridor: CorridorConfig, timeout: int = 30) -> str:
     # Match common route representations in OSM (e.g., 'I 495', 'I-495', or highway name)
     if "495" in route:
         ref_regex = "I 495|I-495|Capital Beltway"
-    elif "95" in route:
-        ref_regex = "I 95|I-95"
     elif "295" in route:
         ref_regex = "I 295|I-295|Anacostia Freeway"
+    elif "95" in route:
+        ref_regex = "I 95|I-95"
     else:
         ref_regex = f"{route}|{route.replace('-', ' ')}"
 
@@ -104,6 +104,10 @@ def fetch_osm_data(
     settings = get_settings()
     url = endpoint or settings.overpass_url
     client = session or requests.Session()
+    headers = {
+        "User-Agent": "TopoFlow/0.1.0 (highway corridor research; contact: stanleyhsu2008@gmail.com)",
+        "Accept": "application/json",
+    }
 
     delay = 1.0
     for attempt in range(1, max_retries + 1):
@@ -111,7 +115,7 @@ def fetch_osm_data(
             logger.debug(
                 "Executing Overpass query (attempt %d/%d) against %s", attempt, max_retries, url
             )
-            response = client.post(url, data={"data": query}, timeout=timeout)
+            response = client.post(url, data={"data": query}, headers=headers, timeout=timeout)
 
             if response.status_code == 200:
                 try:
@@ -225,17 +229,18 @@ def _classify_direction(
 def _stitch_segments_to_linestring(
     segments: list[list[tuple[float, float]]],
     target_direction: str,
-    max_gap_degrees: float = 0.005,
+    max_gap_degrees: float = 0.0005,
 ) -> LineString:
     """Stitch an unordered collection of coordinate chains into a single continuous LineString.
 
     Handles way reversal and chain connection. Validates that resulting LineString has
-    zero breaks and is oriented along the intended direction of travel.
+    zero breaks and is oriented along the intended direction of travel. Rejects gaps > 50m
+    to prevent cross-median jumps (15-40m wide), interchange ramp leaps, or masking missing bridge spans.
 
     Args:
         segments: List of coordinate lists [(lon, lat), ...].
         target_direction: Desired direction ('inner_loop', 'outer_loop', 'northbound', 'southbound').
-        max_gap_degrees: Maximum allowable distance gap between connecting segment endpoints (~500m).
+        max_gap_degrees: Maximum allowable distance gap between connecting segment endpoints (~50m).
 
     Returns:
         Continuous Shapely LineString.

@@ -10,6 +10,9 @@ import logging
 from pathlib import Path
 
 import geopandas as gpd
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from topoflow.config import Settings, get_settings
@@ -50,7 +53,7 @@ def plot_corridors(
     fig, axes = plt.subplots(
         nrows=1,
         ncols=n_corridors,
-        figsize=(5.5 * n_corridors, 5.0),
+        figsize=(6.0 * n_corridors, 5.5),
         squeeze=False,
     )
     axes_flat = axes.flatten()
@@ -74,6 +77,18 @@ def plot_corridors(
         subset = gdf[gdf["corridor_id"] == corridor_id]
         name = subset["name"].iloc[0] if "name" in subset.columns else corridor_id
 
+        # For the study corridor, plot the Potomac River gorge reference line
+        if corridor_id == "alb_i495":
+            ax.axhline(
+                y=38.972,
+                color="#38bdf8",
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.6,
+                label="Potomac River (VA/MD Border)",
+                zorder=2,
+            )
+
         for _, row in subset.iterrows():
             geom = row.geometry
             direction = row.get("direction", "unknown")
@@ -90,32 +105,51 @@ def plot_corridors(
                     solid_capstyle="round",
                     label=label,
                     alpha=0.9,
+                    zorder=3,
                 )
                 # Station vertices
-                ax.scatter(x, y, color=color, s=14, zorder=4, alpha=0.8)
+                ax.scatter(x, y, color=color, s=12, zorder=4, alpha=0.7)
 
-                # Bridge highlight if flagged
-                if row.get("has_bridge"):
-                    # Find mid-point to annotate bridge
-                    mid_idx = len(x) // 2
-                    ax.scatter(
-                        [x[mid_idx]],
-                        [y[mid_idx]],
-                        color="#f59e0b",
-                        s=80,
-                        marker="^",
-                        zorder=5,
-                        edgecolors="#78350f",
-                        linewidth=1.2,
-                        label="Bridge Span" if idx == 0 and direction == "inner_loop" else None,
-                    )
+                # American Legion Bridge span highlight (vertical Potomac crossing: lat 38.967 to 38.9765)
+                if corridor_id == "alb_i495" and row.get("has_bridge"):
+                    bridge_pts = [
+                        (xi, yi)
+                        for xi, yi in zip(x, y, strict=False)
+                        if 38.9670 <= yi <= 38.9765 and -77.1810 <= xi <= -77.1775
+                    ]
+                    if len(bridge_pts) >= 2:
+                        bx, by = zip(*bridge_pts, strict=False)
+                        bridge_label = (
+                            "American Legion Bridge" if direction == "inner_loop" else None
+                        )
+                        ax.plot(
+                            bx,
+                            by,
+                            color="#f59e0b",
+                            linewidth=5.0,
+                            solid_capstyle="butt",
+                            alpha=0.95,
+                            zorder=6,
+                            label=bridge_label,
+                        )
+                        # Abutment anchor points
+                        ax.scatter(
+                            [bx[0], bx[-1]],
+                            [by[0], by[-1]],
+                            color="#d97706",
+                            s=36,
+                            marker="s",
+                            edgecolors="#78350f",
+                            linewidth=1.0,
+                            zorder=7,
+                        )
 
-        ax.set_title(f"{name}", fontsize=11, fontweight="bold", pad=10)
+        ax.set_title(f"{name}", fontsize=9, fontweight="bold", pad=8)
         ax.set_xlabel("Longitude (deg W)", fontsize=9)
         ax.set_ylabel("Latitude (deg N)", fontsize=9)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.tick_params(labelsize=8)
-        ax.legend(loc="best", fontsize=8, framealpha=0.85)
+        ax.legend(loc="best", fontsize=7.5, framealpha=0.85)
 
     fig.suptitle(
         "TopoFlow — Highway Vector Corridors & Directional Centerlines (Phase 1)",

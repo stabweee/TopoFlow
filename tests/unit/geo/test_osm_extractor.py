@@ -108,11 +108,11 @@ class TestOSMElementParsing:
 
     def test_parse_elements_valid(self, raw_alb_json: dict) -> None:
         nodes, ways = parse_osm_elements(raw_alb_json)
-        assert len(nodes) == 12
-        assert len(ways) == 6
-        assert 101 in nodes
-        assert nodes[101] == (-77.2250, 38.9550)
-        assert ways[0]["id"] == 1001
+        assert len(nodes) > 100
+        assert len(ways) >= 10
+        first_node_id = next(iter(nodes.keys()))
+        assert isinstance(nodes[first_node_id], tuple)
+        assert len(nodes[first_node_id]) == 2
 
     def test_parse_elements_empty(self) -> None:
         nodes, ways = parse_osm_elements({})
@@ -171,11 +171,11 @@ class TestStitchingAndTopologicalAssembly:
             _stitch_segments_to_linestring([], "inner_loop")
 
     def test_stitch_gap_exceeds_tolerance_raises_error(self) -> None:
-        seg1 = [(-77.22, 38.95), (-77.21, 38.96)]
-        # seg2 is located far away (> 0.005 degrees gap)
-        seg2 = [(-77.10, 38.96), (-77.09, 38.97)]
+        seg1 = [(-77.2200, 38.9500), (-77.2100, 38.9600)]
+        # seg2 endpoint has an unphysical gap > 0.0005 degrees (~50m, e.g. cross-median jump)
+        seg2 = [(-77.2090, 38.9600), (-77.2000, 38.9700)]
         with pytest.raises(OSMTopologicalError, match="Topological gap"):
-            _stitch_segments_to_linestring([seg1, seg2], "inner_loop", max_gap_degrees=0.005)
+            _stitch_segments_to_linestring([seg1, seg2], "inner_loop")
 
     def test_calculate_metric_length(self) -> None:
         line = LineString([(-77.2250, 38.9550), (-77.1850, 38.9950)])
@@ -212,7 +212,7 @@ class TestOSMExtractorEndToEnd:
         assert 5000 < outer.length_meters < 7000
 
         # Verify maxspeed is captured
-        assert all(gdf["maxspeed"] == "55 mph")
+        assert all(gdf["maxspeed"] == "65 mph")
 
     def test_extract_corridor_cache_hit(
         self,

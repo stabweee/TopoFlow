@@ -13,13 +13,13 @@ corridors:
       start: "VA-44.0"
       end: "MD-41.0"
     bounding_box:
-      min_lat: 38.95
-      max_lat: 39.00
-      min_lon: -77.23
-      max_lon: -77.18
+      min_lat: 38.945
+      max_lat: 38.995
+      min_lon: -77.215
+      max_lon: -77.165
     centroid:
-      lat: 38.9697
-      lon: -77.2092
+      lat: 38.9744
+      lon: -77.1761
     directions:
       - "inner_loop"
       - "outer_loop"
