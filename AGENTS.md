@@ -72,7 +72,17 @@ Fix all failures and re-run until 100% green before proceeding.
 
 ---
 
-## 6. Code Reviewer Subagent Protocol
+## 6. Milestone Visual Verification Gate
+
+At every pipeline milestone (Phases 1 through 6), generate and inspect a domain-specific visual artifact to verify physical plausibility and prevent silent data corruption (e.g., plan view centerlines, vertical sag curve profiles, space-time speed heatmaps, empirical fundamental diagrams, or causal counterfactual curves).
+
+- Save static production figures with deterministic names to `outputs/figures/` (e.g., `p1_corridor_centerlines.png`, `p1_sag_elevation_profile.png`).
+- Surface interactive visualization cards in the conversation where appropriate for immediate inspection.
+- Visually verify physical properties (e.g., grade sign, lack of topological breaks, realistic jam density bounds) before signing off on milestones.
+
+---
+
+## 7. Code Reviewer Subagent Protocol
 
 After verification passes:
 
@@ -82,7 +92,7 @@ After verification passes:
 
 ---
 
-## 7. Definition of Done (DoD)
+## 8. Definition of Done (DoD)
 
 A task is **Done** only when:
 
@@ -92,19 +102,20 @@ A task is **Done** only when:
 - [ ] `uv run ruff format --check .` passes.
 - [ ] `uv run pytest -v` passes (100% green).
 - [ ] New code covered by unit/integration tests.
+- [ ] Visual verification artifact generated, inspected for physical plausibility, and saved to `outputs/figures/` (or surfaced via interactive card).
 - [ ] Code Reviewer subagent diff review clean and approved.
 - [ ] Relevant documentation updated.
 - [ ] `AGENT_STATE.md` updated.
 
 ---
 
-## 8. Session Continuity (`AGENT_STATE.md`)
+## 9. Session Continuity (`AGENT_STATE.md`)
 
 Maintain `AGENT_STATE.md` in the root directory across all milestones and handovers. It must record completed items, test health, failing tests/blockers, exact next actions, and technical context.
 
 ---
 
-## 9. Git Operations & Permission Protocol
+## 10. Git Operations & Permission Protocol
 
 > **CRITICAL**: Never stage (`git add`), commit (`git commit`), or push (`git push`) without explicit user permission.
 
