@@ -1,0 +1,102 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API mock",
+  "osm3s": {
+    "timestamp_osm_base": "2026-11-10T00:00:00Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org."
+  },
+  "elements": [
+    {"type": "node", "id": 101, "lat": 38.9550, "lon": -77.2250},
+    {"type": "node", "id": 102, "lat": 38.9620, "lon": -77.2180},
+    {"type": "node", "id": 103, "lat": 38.9680, "lon": -77.2120},
+    {"type": "node", "id": 104, "lat": 38.9730, "lon": -77.2060},
+    {"type": "node", "id": 105, "lat": 38.9850, "lon": -77.1950},
+    {"type": "node", "id": 106, "lat": 38.9950, "lon": -77.1850},
+    {"type": "node", "id": 201, "lat": 38.9952, "lon": -77.1853},
+    {"type": "node", "id": 202, "lat": 38.9852, "lon": -77.1953},
+    {"type": "node", "id": 203, "lat": 38.9732, "lon": -77.2063},
+    {"type": "node", "id": 204, "lat": 38.9682, "lon": -77.2123},
+    {"type": "node", "id": 205, "lat": 38.9622, "lon": -77.2183},
+    {"type": "node", "id": 206, "lat": 38.9552, "lon": -77.2253},
+    {
+      "type": "way",
+      "id": 1001,
+      "nodes": [101, 102, 103],
+      "tags": {
+        "highway": "motorway",
+        "ref": "I 495",
+        "name": "Capital Beltway (Inner Loop)",
+        "lanes": "4",
+        "oneway": "yes",
+        "maxspeed": "55 mph"
+      }
+    },
+    {
+      "type": "way",
+      "id": 1002,
+      "nodes": [103, 104],
+      "tags": {
+        "highway": "motorway",
+        "ref": "I 495",
+        "name": "American Legion Memorial Bridge (Inner Loop)",
+        "bridge": "yes",
+        "lanes": "5",
+        "oneway": "yes",
+        "maxspeed": "55 mph"
+      }
+    },
+    {
+      "type": "way",
+      "id": 1003,
+      "nodes": [104, 105, 106],
+      "tags": {
+        "highway": "motorway",
+        "ref": "I 495",
+        "name": "Capital Beltway (Inner Loop)",
+        "lanes": "4",
+        "oneway": "yes",
+        "maxspeed": "55 mph"
+      }
+    },
+    {
+      "type": "way",
+      "id": 2001,
+      "nodes": [201, 202, 203],
+      "tags": {
+        "highway": "motorway",
+        "ref": "I 495",
+        "name": "Capital Beltway (Outer Loop)",
+        "lanes": "4",
+        "oneway": "yes",
+        "maxspeed": "55 mph"
+      }
+    },
+    {
+      "type": "way",
+      "id": 2002,
+      "nodes": [203, 204],
+      "tags": {
+        "highway": "motorway",
+        "ref": "I 495",
+        "name": "American Legion Memorial Bridge (Outer Loop)",
+        "bridge": "yes",
+        "lanes": "5",
+        "oneway": "yes",
+        "maxspeed": "55 mph"
+      }
+    },
+    {
+      "type": "way",
+      "id": 2003,
+      "nodes": [204, 205, 206],
+      "tags": {
+        "highway": "motorway",
+        "ref": "I 495",
+        "name": "Capital Beltway (Outer Loop)",
+        "lanes": "4",
+        "oneway": "yes",
+        "maxspeed": "55 mph"
+      }
+    }
+  ]
+}

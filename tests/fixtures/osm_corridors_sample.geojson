@@ -1,0 +1,151 @@
+{
+  "type": "FeatureCollection",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "corridor_id": "alb_i495",
+        "direction": "inner_loop",
+        "route": "I-495",
+        "name": "Capital Beltway (Inner Loop)",
+        "lanes": 4,
+        "has_bridge": true,
+        "length_meters": 5683.4,
+        "is_continuous": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-77.2250, 38.9550],
+          [-77.2180, 38.9620],
+          [-77.2120, 38.9680],
+          [-77.2060, 38.9730],
+          [-77.1950, 38.9850],
+          [-77.1850, 38.9950]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "corridor_id": "alb_i495",
+        "direction": "outer_loop",
+        "route": "I-495",
+        "name": "Capital Beltway (Outer Loop)",
+        "lanes": 4,
+        "has_bridge": true,
+        "length_meters": 5683.4,
+        "is_continuous": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-77.1853, 38.9952],
+          [-77.1953, 38.9852],
+          [-77.2063, 38.9732],
+          [-77.2123, 38.9682],
+          [-77.2183, 38.9622],
+          [-77.2253, 38.9552]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "corridor_id": "i95_lorton_woodbridge",
+        "direction": "northbound",
+        "route": "I-95",
+        "name": "I-95 Northbound",
+        "lanes": 4,
+        "has_bridge": false,
+        "length_meters": 9120.5,
+        "is_continuous": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-77.2550, 38.6450],
+          [-77.2480, 38.6650],
+          [-77.2400, 38.6800],
+          [-77.2320, 38.7000],
+          [-77.2250, 38.7150]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "corridor_id": "i95_lorton_woodbridge",
+        "direction": "southbound",
+        "route": "I-95",
+        "name": "I-95 Southbound",
+        "lanes": 4,
+        "has_bridge": false,
+        "length_meters": 9120.5,
+        "is_continuous": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-77.2253, 38.7152],
+          [-77.2323, 38.7002],
+          [-77.2403, 38.6802],
+          [-77.2483, 38.6652],
+          [-77.2553, 38.6452]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "corridor_id": "i295_anacostia",
+        "direction": "northbound",
+        "route": "I-295",
+        "name": "Anacostia Freeway Northbound",
+        "lanes": 3,
+        "has_bridge": false,
+        "length_meters": 6245.1,
+        "is_continuous": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-77.0180, 38.8250],
+          [-77.0120, 38.8350],
+          [-77.0050, 38.8450],
+          [-76.9980, 38.8550],
+          [-76.9920, 38.8650]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "corridor_id": "i295_anacostia",
+        "direction": "southbound",
+        "route": "I-295",
+        "name": "Anacostia Freeway Southbound",
+        "lanes": 3,
+        "has_bridge": false,
+        "length_meters": 6245.1,
+        "is_continuous": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-76.9923, 38.8652],
+          [-76.9983, 38.8552],
+          [-77.0053, 38.8452],
+          [-77.0123, 38.8352],
+          [-77.0183, 38.8252]
+        ]
+      }
+    }
+  ]
+}
