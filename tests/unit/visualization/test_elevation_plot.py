@@ -88,3 +88,63 @@ class TestElevationPlotting:
         empty_df = pl.DataFrame()
         with pytest.raises(ValueError):
             plot_savgol_vs_raw_differences(empty_df, output_path=tmp_path / "err.png")
+
+    def test_plot_corridor_elevation_profile_control_corridors_steep_grades(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Verify dynamic headroom accommodates control corridors with grades exceeding +/-2.0%."""
+        chainage = np.arange(0.0, 3000.0, 100.0)
+        n = len(chainage)
+
+        # Control corridor I-95 with steep rolling grades from -3.0% to +3.5%
+        g95 = np.linspace(-3.0, 3.5, n)
+        df_i95 = pl.DataFrame(
+            {
+                "segment_id": [f"i95_s{i:04d}" for i in range(n)],
+                "corridor_id": ["i95_lorton_woodbridge"] * n,
+                "direction": ["northbound"] * n,
+                "station_index": list(range(n)),
+                "chainage_m": chainage,
+                "easting": [310000.0 + i * 10 for i in range(n)],
+                "northing": [4315000.0 + i * 100 for i in range(n)],
+                "elevation_raw_m": [50.0 + i * 0.5 for i in range(n)],
+                "elevation_smooth_m": [50.0 + i * 0.5 for i in range(n)],
+                "grade_pct": g95,
+                "grade_raw_pct": g95,
+                "vertical_curvature": [0.0] * n,
+                "is_sag": [False] * n,
+                "is_crest": [False] * n,
+                "is_bridge_deck": [False] * n,
+            }
+        )
+
+        # Control corridor I-295 with rolling grades exceeding +/-2.0%
+        g295 = np.linspace(-2.5, 3.2, n)
+        df_i295 = pl.DataFrame(
+            {
+                "segment_id": [f"i295_s{i:04d}" for i in range(n)],
+                "corridor_id": ["i295_anacostia"] * n,
+                "direction": ["northbound"] * n,
+                "station_index": list(range(n)),
+                "chainage_m": chainage,
+                "easting": [315000.0 + i * 10 for i in range(n)],
+                "northing": [4320000.0 + i * 100 for i in range(n)],
+                "elevation_raw_m": [30.0 + i * 0.3 for i in range(n)],
+                "elevation_smooth_m": [30.0 + i * 0.3 for i in range(n)],
+                "grade_pct": g295,
+                "grade_raw_pct": g295,
+                "vertical_curvature": [0.0] * n,
+                "is_sag": [False] * n,
+                "is_crest": [False] * n,
+                "is_bridge_deck": [False] * n,
+            }
+        )
+
+        df_multi = pl.concat([df_i95, df_i295])
+        out_file = tmp_path / "test_steep_control_corridors.png"
+
+        saved_path = plot_corridor_elevation_profile(df_multi, output_path=out_file, dpi=80)
+        assert saved_path == out_file
+        assert out_file.exists()
+        assert out_file.stat().st_size > 10000

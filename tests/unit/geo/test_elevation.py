@@ -9,6 +9,7 @@ alignment classification, and the vectorized corridor processing pipeline.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import geopandas as gpd
@@ -278,6 +279,52 @@ class TestExtractBridgeDeckLaz:
         missing_laz = tmp_path / "non_existent.laz"
         with pytest.raises(FileNotFoundError):
             extractor.extract_bridge_deck_laz(bridge_deck_sample_points_gdf, missing_laz)
+
+    def test_extract_bridge_deck_laz_default_buffer_radius_35m(
+        self,
+        extractor: ElevationExtractor,
+        mock_laz_path: Path,
+    ) -> None:
+        """Verify extract_bridge_deck_laz defaults to buffer_radius_m=35.0 and queries within 35m."""
+        sig = inspect.signature(extractor.extract_bridge_deck_laz)
+        assert sig.parameters["buffer_radius_m"].default == 35.0
+
+        # Construct a station offset ~22.0 meters outside the C17 return boundary (X_max ~311252.0)
+        # at northing 4315800.0:
+        northing = 4315800.0
+        offset_easting = 311252.0 + 22.0
+
+        offset_gdf = gpd.GeoDataFrame(
+            {
+                "segment_id": ["alb_offset_s0001"],
+                "corridor_id": ["alb_i495"],
+                "direction": ["inner_loop"],
+                "station_index": [0],
+                "chainage_m": [3900.0],
+                "easting": [offset_easting],
+                "northing": [northing],
+            },
+            geometry=[Point(offset_easting, northing)],
+            crs=CRS_METRIC,
+        )
+
+        # With tight 15m radius, a 22m offset point finds no returns (returns NaN)
+        tight_elevations = extractor.extract_bridge_deck_laz(
+            offset_gdf,
+            mock_laz_path,
+            buffer_radius_m=15.0,
+        )
+        assert len(tight_elevations) == 1
+        assert np.isnan(tight_elevations[0])
+
+        # With default buffer_radius_m=35.0 (omitted argument), the point captures C17 returns
+        default_elevations = extractor.extract_bridge_deck_laz(
+            offset_gdf,
+            mock_laz_path,
+        )
+        assert len(default_elevations) == 1
+        assert np.isfinite(default_elevations[0])
+        assert 42.0 <= default_elevations[0] <= 46.0
 
 
 # =============================================================================
@@ -685,3 +732,95 @@ class TestProcessCorridorStationsPipeline:
         )
         assert isinstance(df_result, pl.DataFrame)
         assert "elevation_smooth_m" in df_result.columns
+
+    def test_alb_potomac_bridge_span_flagging(
+        self,
+        extractor: ElevationExtractor,
+        mock_dem_path: Path,
+        mock_laz_path: Path,
+    ) -> None:
+        """Verify stations along alb_i495 within [3700.0, 4150.0] are marked is_bridge_deck == True."""
+        chainage = np.arange(3500.0, 4350.0, 50.0)
+        n = len(chainage)
+        # Bridge span occupies northing [4315400, 4316400] centered at ALB Potomac crossing
+        northings = np.linspace(4315000.0, 4316600.0, n)
+        gdf = gpd.GeoDataFrame(
+            {
+                "segment_id": [f"alb_i495_s{i:04d}" for i in range(n)],
+                "corridor_id": ["alb_i495"] * n,
+                "direction": ["inner_loop"] * n,
+                "station_index": list(range(n)),
+                "chainage_m": chainage,
+                "easting": [311200.0] * n,
+                "northing": northings,
+            },
+            geometry=[Point(311200.0, y) for y in northings],
+            crs=CRS_METRIC,
+        )
+
+        df_result = extractor.process_corridor_stations(
+            gdf,
+            dem_path=mock_dem_path,
+            laz_path=mock_laz_path,
+        )
+
+        bridge_span = df_result.filter(
+            (pl.col("chainage_m") >= 3700.0) & (pl.col("chainage_m") <= 4150.0)
+        )
+        assert len(bridge_span) > 0
+        assert bridge_span["is_bridge_deck"].all() is True
+
+        approach_span = df_result.filter(pl.col("chainage_m") < 3700.0)
+        assert len(approach_span) > 0
+        assert (~approach_span["is_bridge_deck"]).all() is True
+
+    def test_maryland_approach_roadway_continuity(
+        self,
+        extractor: ElevationExtractor,
+        mock_dem_path: Path,
+        mock_laz_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify roadway continuity prevents elevations dipping below the ascending grade floor."""
+        chainage = np.arange(4100.0, 4800.0, 100.0)
+        n = len(chainage)
+        gdf = gpd.GeoDataFrame(
+            {
+                "segment_id": [f"alb_md_s{i:04d}" for i in range(n)],
+                "corridor_id": ["alb_i495"] * n,
+                "direction": ["inner_loop"] * n,
+                "station_index": list(range(n)),
+                "chainage_m": chainage,
+                "easting": [311200.0 + i * 10 for i in range(n)],
+                "northing": [4316200.0 + i * 100 for i in range(n)],
+            },
+            geometry=[Point(311200.0 + i * 10, 4316200.0 + i * 100) for i in range(n)],
+            crs=CRS_METRIC,
+        )
+
+        # Raw bare-earth DEM samples artificially dip at 4200m (32.0m) and 4500m (36.0m)
+        raw_dem = np.array([42.0, 32.0, 44.0, 46.0, 36.0, 49.0, 51.0])
+        monkeypatch.setattr(
+            ElevationExtractor, "extract_bare_earth_dem", lambda *args, **kwargs: raw_dem
+        )
+
+        df_result = extractor.process_corridor_stations(
+            gdf,
+            dem_path=mock_dem_path,
+            laz_path=mock_laz_path,
+        )
+
+        # Verify raw dip correction prevented dropping below bridge deck / ascending floor
+        z_4200 = df_result.filter(pl.col("chainage_m") == 4200.0)["elevation_raw_m"][0]
+        z_4500 = df_result.filter(pl.col("chainage_m") == 4500.0)["elevation_raw_m"][0]
+        assert z_4200 > 35.0, f"Expected 4200m elevation > 35.0m, got {z_4200:.2f}m"
+        assert z_4500 > 40.0, f"Expected 4500m elevation > 40.0m, got {z_4500:.2f}m"
+
+        # Verify smooth elevation monotonically ascends along the Maryland climb
+        smooth_z = df_result["elevation_smooth_m"].to_numpy()
+        assert smooth_z[-1] > smooth_z[0]
+        assert np.all(smooth_z >= 41.0)
+
+        # Verify grades along the ascending approach remain positive or above grade floor
+        grades = df_result.filter(pl.col("chainage_m") >= 4200.0)["grade_pct"].to_numpy()
+        assert np.all(grades > -0.5)

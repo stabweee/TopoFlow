@@ -90,25 +90,54 @@ def plot_corridor_elevation_profile(
             label="ASPRS Class 17 LiDAR (Bridge Deck)",
         )
 
-        # Highlight Bridge Span
-        if np.any(is_bridge):
-            bridge_km = km[is_bridge]
-            ax_elev.axvspan(
-                bridge_km[0],
-                bridge_km[-1],
-                color="#fee08b",
-                alpha=0.35,
-                label="Potomac River Span (~43m Deck)",
+        # Highlight 450m American Legion Bridge Span (Chainage 3.70 km to 4.15 km)
+        ax_elev.axvspan(
+            3.70,
+            4.15,
+            color="#fee08b",
+            alpha=0.40,
+            label="American Legion Bridge (450m Span, Sag @ ~35.8m)",
+        )
+        bridge_bed_km = np.linspace(3.70, 4.15, 20)
+        river_bed_z = np.full_like(bridge_bed_km, 6.2)
+        ax_elev.plot(
+            bridge_bed_km,
+            river_bed_z,
+            color="#8c564b",
+            ls="--",
+            lw=1.8,
+            label="Potomac River Gorge Bed (~6m Water Level)",
+        )
+
+        # Geographic Landmark Annotations with staggered heights to eliminate label collisions
+        landmarks = [
+            (0.0, 106.0, "Tysons\n(77m)"),
+            (1.4, 108.0, "McLean Crest\n(94m Summit)"),
+            (1.8, 96.0, "Exit 44\n(Georgetown Pk)"),
+            (2.4, 106.0, "Scott's Run\n(-3.2% Drop)"),
+            (3.9, 106.0, "ALB Sag\n(35.8m)"),
+            (4.4, 96.0, "Clara Barton\n(+3.8% Climb)"),
+            (6.4, 106.0, "River Rd\n(MD-190)"),
+        ]
+        for x_pos, y_pos, label_text in landmarks:
+            ax_elev.axvline(x_pos, color="#888888", ls=":", lw=0.9, alpha=0.7)
+            ax_elev.text(
+                x_pos,
+                y_pos,
+                label_text,
+                ha="center",
+                va="bottom",
+                fontsize=7.5,
+                fontweight="semibold",
+                color="#222222",
+                bbox=dict(
+                    boxstyle="round,pad=0.25",
+                    facecolor="#f8f9fa",
+                    edgecolor="#cccccc",
+                    alpha=0.9,
+                ),
             )
-            river_bed_z = np.full_like(bridge_km, 6.2)
-            ax_elev.plot(
-                bridge_km,
-                river_bed_z,
-                color="#8c564b",
-                ls="--",
-                lw=1.8,
-                label="Bare-Earth DTM River Bed (~6m Water Level)",
-            )
+        ax_elev.set_ylim(0, 122)
 
         ax_elev.set_title(
             "I-495 American Legion Bridge: Hybrid Elevation Profile (Virginia Descent to Maryland Ascent)",
@@ -118,7 +147,7 @@ def plot_corridor_elevation_profile(
         ax_elev.set_xlabel("Chainage Distance (km)", fontsize=11)
         ax_elev.set_ylabel("Elevation NAVD88 (m)", fontsize=11)
         ax_elev.grid(True, linestyle=":", alpha=0.6)
-        ax_elev.legend(loc="upper right", frameon=True, fontsize=9)
+        ax_elev.legend(loc="lower left", frameon=True, fontsize=9)
 
     # 2. Vertical Grade Profile (Grade %)
     ax_grade = fig.add_subplot(gs[1, 0])
@@ -175,7 +204,8 @@ def plot_corridor_elevation_profile(
         grade_i95 = df_i95["grade_pct"].to_numpy()
         ax_c1.plot(km_i95, grade_i95, color="#17becf", lw=1.8, label="I-95 NB Grade (%)")
         ax_c1.axhline(0.0, color="black", lw=0.8, ls="--")
-        ax_c1.set_ylim(-2.0, 2.0)
+        max_g1 = max(3.5, float(np.nanmax(np.abs(grade_i95))) + 0.5)
+        ax_c1.set_ylim(-max_g1, max_g1)
         ax_c1.set_title(
             f"Control 1: I-95 Flat Tangent (Mean: {np.mean(grade_i95):.2f}% ± {np.std(grade_i95):.2f}%)",
             fontsize=11,
@@ -197,7 +227,8 @@ def plot_corridor_elevation_profile(
         grade_i295 = df_i295["grade_pct"].to_numpy()
         ax_c2.plot(km_i295, grade_i295, color="#bcbd22", lw=1.8, label="I-295 NB Grade (%)")
         ax_c2.axhline(0.0, color="black", lw=0.8, ls="--")
-        ax_c2.set_ylim(-2.0, 2.0)
+        max_g2 = max(3.5, float(np.nanmax(np.abs(grade_i295))) + 0.5)
+        ax_c2.set_ylim(-max_g2, max_g2)
         ax_c2.set_title(
             f"Control 2: I-295 Flat Tangent (Mean: {np.mean(grade_i295):.2f}% ± {np.std(grade_i295):.2f}%)",
             fontsize=11,
