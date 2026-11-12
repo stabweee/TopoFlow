@@ -9,6 +9,18 @@ from topoflow.geo.discretization import (
     project_linestring,
     resample_carriageway_stations,
 )
+from topoflow.geo.elevation import (
+    ElevationExtractor,
+    ElevationExtractorError,
+    classify_vertical_alignment,
+    compute_raw_discrete_differences,
+    evaluate_filtering_metrics,
+    extract_bare_earth_dem,
+    extract_bridge_deck_laz,
+    process_corridor_stations,
+    smooth_elevation_profile,
+    validate_bridge_as_built,
+)
 from topoflow.geo.osm_extractor import (
     OSMExtractor,
     OSMExtractorError,
@@ -23,6 +35,8 @@ from topoflow.geo.osm_extractor import (
 
 __all__ = [
     "DiscretizationError",
+    "ElevationExtractor",
+    "ElevationExtractorError",
     "OSMExtractor",
     "OSMExtractorError",
     "OSMNetworkError",
@@ -31,11 +45,19 @@ __all__ = [
     "SpatialDiscretizer",
     "build_overpass_query",
     "calculate_metric_length",
+    "classify_vertical_alignment",
     "compute_heading",
+    "compute_raw_discrete_differences",
+    "evaluate_filtering_metrics",
+    "extract_bare_earth_dem",
+    "extract_bridge_deck_laz",
     "fetch_osm_data",
     "generate_segment_id",
     "menger_curvature",
     "parse_osm_elements",
+    "process_corridor_stations",
     "project_linestring",
     "resample_carriageway_stations",
+    "smooth_elevation_profile",
+    "validate_bridge_as_built",
 ]

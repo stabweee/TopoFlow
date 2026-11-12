@@ -1,0 +1,16 @@
+# TopoFlow Bridge As-Built Elevation Benchmark Profile
+# NBI Structure ID: 100000495000010 (American Legion Memorial Bridge / Cabin John Bridge)
+# Crossing: I-495 Capital Beltway over Potomac River (VA/MD Border)
+# Datum: NAVD88 (Meters)
+# Source: VDOT / MDOT SHA As-Built Structural Plans & USGS 3DEP LiDAR Benchmark
+station_offset_m,distance_from_va_abutment_m,elevation_navd88_m,feature_description
+0.0,0.0,44.25,VA Abutment Bearing Seat (South Abutment)
+100.0,100.0,40.88,Span 1 Approach Pier 1 Deck Centerline
+200.0,200.0,38.11,Span 2 Pier 2 Deck Centerline
+300.0,300.0,35.92,Span 3 VA Channel Arch Springing Line
+400.0,400.0,35.77,Span 4 Main Potomac River Sag Low Point
+500.0,500.0,35.75,Span 5 Mid-Channel Navigation Trough
+600.0,600.0,36.99,Span 6 MD Channel Arch Pier
+700.0,700.0,39.83,Span 7 Approach Span Centerline
+800.0,800.0,43.00,Span 8 Approach Pier 6 Deck Centerline
+900.0,900.0,45.41,MD Abutment Bearing Seat (North Abutment)
