@@ -507,8 +507,38 @@ class ElevationExtractor:
 
         for _, group_indices in gdf.groupby(["corridor_id", "direction"]).groups.items():
             idx = np.asarray(group_indices)
+            sort_order = np.argsort(gdf.iloc[idx]["chainage_m"].to_numpy())
+            idx = idx[sort_order]
             sub_chainage = gdf.iloc[idx]["chainage_m"].to_numpy().astype(np.float64)
-            sub_z = raw_elevations[idx]
+            sub_z = raw_elevations[idx].copy()
+            n = len(sub_z)
+
+            # 1. Bridge water-crossing continuity: Bare-earth DEM strips bridge decks,
+            # causing elevations to plunge into tidal water/riverbeds (e.g. Occoquan River on I-95 at Z < 2m).
+            # Restore elevated bridge deck by interpolating between entrance and exit approach piers.
+            water_mask = np.isfinite(sub_z) & (sub_z < 2.0)
+            if np.any(water_mask):
+                valid = np.where(~water_mask & np.isfinite(sub_z))[0]
+                if len(valid) >= 2:
+                    sub_z[water_mask] = np.interp(
+                        sub_chainage[water_mask], sub_chainage[valid], sub_z[valid]
+                    )
+                    is_bridge_deck_arr[idx[water_mask]] = True
+
+            # 2. Boundary interchange ditch corrections (stations landing off embankment into ditch)
+            if n > 2 and (sub_z[1] - sub_z[0] > 4.0):
+                sub_z[0] = 2.0 * sub_z[1] - sub_z[2]
+            if n > 2 and (sub_z[-2] - sub_z[-1] > 4.0):
+                sub_z[-1] = 2.0 * sub_z[-2] - sub_z[-3]
+
+            # 3. Intermediate overpass/viaduct underpass trench drops (bare-earth cuts under highway bridges)
+            for _ in range(2):
+                for i in range(1, n - 1):
+                    chord = (sub_z[i - 1] + sub_z[i + 1]) / 2.0
+                    if chord - sub_z[i] > 2.5:
+                        sub_z[i] = chord
+
+            raw_elevations[idx] = sub_z
 
             sub_z_smooth, sub_grade, sub_curv = self.smooth_elevation_profile(
                 sub_chainage, sub_z, window_length=5, polyorder=2

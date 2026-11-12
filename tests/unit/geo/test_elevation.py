@@ -824,3 +824,101 @@ class TestProcessCorridorStationsPipeline:
         # Verify grades along the ascending approach remain positive or above grade floor
         grades = df_result.filter(pl.col("chainage_m") >= 4200.0)["grade_pct"].to_numpy()
         assert np.all(grades > -0.5)
+
+    def test_water_crossing_bridge_deck_continuity(
+        self,
+        mock_dem_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify water crossing elevation plunge is flagged as bridge deck and interpolated above water."""
+        n = 10
+        chainage = np.arange(0.0, 1000.0, 100.0)
+        gdf = gpd.GeoDataFrame(
+            {
+                "segment_id": [f"i95_nb_s{i:04d}" for i in range(n)],
+                "corridor_id": ["i95_lorton_woodbridge"] * n,
+                "direction": ["northbound"] * n,
+                "station_index": list(range(n)),
+                "chainage_m": chainage,
+                "easting": [310000.0 + i * 50.0 for i in range(n)],
+                "northing": [4310000.0 + i * 100.0 for i in range(n)],
+            },
+            geometry=[Point(310000.0 + i * 50.0, 4310000.0 + i * 100.0) for i in range(n)],
+            crs=CRS_METRIC,
+        )
+
+        # Surrounding stations are at ~15m, while stations 4 and 5 cross a tidal river plunging to -0.53m
+        raw_dem = np.array([15.0, 15.1, 15.0, 14.9, -0.53, -0.53, 15.0, 15.2, 15.1, 15.0])
+        monkeypatch.setattr(
+            ElevationExtractor, "extract_bare_earth_dem", lambda *args, **kwargs: raw_dem
+        )
+
+        df_result = process_corridor_stations(
+            gdf,
+            dem_path=mock_dem_path,
+        )
+
+        # Verify stations 4 and 5 are marked is_bridge_deck == True
+        bridge_stations = df_result.filter(pl.col("station_index").is_in([4, 5]))
+        assert len(bridge_stations) == 2
+        assert bridge_stations["is_bridge_deck"].all() is True
+
+        # Non-water stations should not be flagged as bridge deck
+        non_bridge_stations = df_result.filter(~pl.col("station_index").is_in([4, 5]))
+        assert (~non_bridge_stations["is_bridge_deck"]).all() is True
+
+        # Verify elevations are interpolated above water (>10m)
+        bridge_elevations_raw = bridge_stations["elevation_raw_m"].to_numpy()
+        bridge_elevations_smooth = bridge_stations["elevation_smooth_m"].to_numpy()
+        assert np.all(bridge_elevations_raw > 10.0)
+        assert np.all(bridge_elevations_smooth > 10.0)
+
+        # Verify vertical grades do not spike past 4.0%
+        grades = df_result["grade_pct"].to_numpy()
+        assert np.all(np.abs(grades) <= 4.0)
+
+    def test_underpass_trench_cut_repair(
+        self,
+        mock_dem_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify isolated underpass trench drop is smoothed toward roadway chord without grade spikes."""
+        n = 11
+        chainage = np.arange(0.0, 1100.0, 100.0)
+        gdf = gpd.GeoDataFrame(
+            {
+                "segment_id": [f"i95_underpass_s{i:04d}" for i in range(n)],
+                "corridor_id": ["i95_lorton_woodbridge"] * n,
+                "direction": ["northbound"] * n,
+                "station_index": list(range(n)),
+                "chainage_m": chainage,
+                "easting": [310000.0 + i * 50.0 for i in range(n)],
+                "northing": [4310000.0 + i * 100.0 for i in range(n)],
+            },
+            geometry=[Point(310000.0 + i * 50.0, 4310000.0 + i * 100.0) for i in range(n)],
+            crs=CRS_METRIC,
+        )
+
+        # Baseline roadway elevation at ~30m with station at 500m (index 5) dropping 6m below chord
+        raw_dem = np.full(n, 30.0)
+        raw_dem[5] = 24.0  # 6m trench cut drop below adjacent stations (30m)
+        monkeypatch.setattr(
+            ElevationExtractor, "extract_bare_earth_dem", lambda *args, **kwargs: raw_dem
+        )
+
+        df_result = process_corridor_stations(
+            gdf,
+            dem_path=mock_dem_path,
+        )
+
+        # Verify intermediate depression is smoothed toward the roadway chord (~30m)
+        z_trench_raw = df_result.filter(pl.col("station_index") == 5)["elevation_raw_m"][0]
+        z_trench_smooth = df_result.filter(pl.col("station_index") == 5)["elevation_smooth_m"][0]
+        assert np.isclose(z_trench_raw, 30.0, atol=0.5)
+        assert np.isclose(z_trench_smooth, 30.0, atol=0.5)
+
+        # Verify vertical grades do not exhibit artificial double-digit grade spikes (>= 10.0%)
+        grades_smooth = df_result["grade_pct"].to_numpy()
+        grades_raw = df_result["grade_raw_pct"].to_numpy()
+        assert np.all(np.abs(grades_smooth) < 5.0)
+        assert np.all(np.abs(grades_raw) < 5.0)
