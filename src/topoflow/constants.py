@@ -27,6 +27,18 @@ SPATIAL_RESOLUTION_METERS: float = 100.0
 # Curvature threshold cap for straight highway tangents (meters).
 MAX_STRAIGHT_RADIUS_METERS: float = 10000.0
 
+# Topographical Friction Index (TFI) default weights and normalizations.
+TFI_WEIGHT_GRADE: float = 0.7
+TFI_WEIGHT_CURVATURE: float = 0.3
+TFI_GRADE_NORM_PCT: float = 3.0
+TFI_CURVATURE_NORM_INV_M: float = 0.002
+
+# AASHTO Vertical Grade Classification Thresholds (Percent)
+GRADE_STEEP_UPGRADE_THRESHOLD: float = 2.5
+GRADE_STEEP_DOWNGRADE_THRESHOLD: float = -2.5
+GRADE_FLAT_UPPER_THRESHOLD: float = 0.5
+GRADE_FLAT_LOWER_THRESHOLD: float = -0.5
+
 
 # =============================================================================
 # Traffic & Kinematic Constraints

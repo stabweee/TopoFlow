@@ -71,7 +71,11 @@ def plot_corridor_elevation_profile(
         is_bridge = df_alb_inner["is_bridge_deck"].to_numpy()
 
         ax_elev.plot(
-            km, z_smooth, color="#1f77b4", lw=2.5, label="Roadway Centerline (Savitzky-Golay)"
+            km,
+            z_smooth,
+            color="#1f77b4",
+            lw=2.5,
+            label="Roadway Centerline (Savitzky-Golay)",
         )
         ax_elev.scatter(
             km[~is_bridge],
@@ -158,10 +162,22 @@ def plot_corridor_elevation_profile(
         ax_grade.axhline(-3.2, color="#d62728", lw=1.0, ls=":", label="Nominal VA Descent (-3.2%)")
         ax_grade.axhline(+3.8, color="#2ca02c", lw=1.0, ls=":", label="Nominal MD Ascent (+3.8%)")
         ax_grade.fill_between(
-            km, grade, 0.0, where=(grade < 0), color="#d62728", alpha=0.15, label="Descent Zone"
+            km,
+            grade,
+            0.0,
+            where=(grade < 0),
+            color="#d62728",
+            alpha=0.15,
+            label="Descent Zone",
         )
         ax_grade.fill_between(
-            km, grade, 0.0, where=(grade > 0), color="#2ca02c", alpha=0.15, label="Ascent Zone"
+            km,
+            grade,
+            0.0,
+            where=(grade > 0),
+            color="#2ca02c",
+            alpha=0.15,
+            label="Ascent Zone",
         )
 
         ax_grade.set_title(
@@ -181,7 +197,11 @@ def plot_corridor_elevation_profile(
         is_sag = df_alb_inner["is_sag"].to_numpy()
         ax_curv.plot(km, curv, color="#9467bd", lw=2.0, label="Curvature (d²z/dx² × 10⁴)")
         ax_curv.scatter(
-            km[is_sag], curv[is_sag], color="#8c564b", s=30, label="Sag Inflection Trough"
+            km[is_sag],
+            curv[is_sag],
+            color="#8c564b",
+            s=30,
+            label="Sag Inflection Trough",
         )
         ax_curv.axhline(0.0, color="black", lw=0.8, ls="--")
 
@@ -302,7 +322,11 @@ def plot_savgol_vs_raw_differences(
         km, z_raw, color="#7f7f7f", alpha=0.65, s=20, label="Raw Sampled Elevations (z)"
     )
     axs[0, 0].plot(
-        km, z_sg, color="#1f77b4", lw=2.4, label="Savitzky-Golay Filtered Surface (w=5, p=2)"
+        km,
+        z_sg,
+        color="#1f77b4",
+        lw=2.4,
+        label="Savitzky-Golay Filtered Surface (w=5, p=2)",
     )
     axs[0, 0].set_title(
         "Panel A: Elevation Profile Surface Filtering", fontsize=12, fontweight="bold"
