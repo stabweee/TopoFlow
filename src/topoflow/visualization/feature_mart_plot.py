@@ -1,7 +1,7 @@
 """Visualization module for Geospatial Feature Mart Health & Diagnostics (TF-013).
 
 Generates the Phase 1 milestone data mart health diagnostic dashboard:
-    outputs/figures/p1_spatial_feature_mart.png
+    outputs/figures/phase1/p1_spatial_feature_mart.png
 
 Features a comprehensive 4-panel diagnostic matrix:
     1. Topographical Friction Index (TFI) empirical distributions (KDE, boxplots, cross-corridor contrasts).
@@ -64,7 +64,7 @@ def plot_spatial_feature_mart(
         raise ValueError("Cannot plot spatial feature mart: DataFrame is empty.")
 
     out_file = output_path or (
-        settings.outputs_dir / "figures" / "p1_spatial_feature_mart.png"
+        settings.outputs_dir / "figures" / "phase1" / "p1_spatial_feature_mart.png"
     )
     out_file = Path(out_file)
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -93,9 +93,7 @@ def plot_spatial_feature_mart(
 
     # Count nulls across all columns
     null_counts = df.null_count().sum_horizontal()[0]
-    corridor_counts = {
-        c: len(df.filter(pl.col("corridor") == c)) for c in active_corridors
-    }
+    corridor_counts = {c: len(df.filter(pl.col("corridor") == c)) for c in active_corridors}
 
     # -------------------------------------------------------------------------
     # Figure Setup & 2x2 Master Diagnostic Grid
@@ -123,9 +121,7 @@ def plot_spatial_feature_mart(
     )
 
     # Health & Integrity Audit Banner
-    banner_details = "  |  ".join(
-        [f"{c}: {corridor_counts[c]}" for c in active_corridors]
-    )
+    banner_details = "  |  ".join([f"{c}: {corridor_counts[c]}" for c in active_corridors])
     banner_text = (
         f"Data Mart Audit: {total_stations} Verified Stations across {len(active_corridors)} Corridors  |  "
         f"Null Values: {null_counts} (100% Complete)  |  "
@@ -183,9 +179,7 @@ def plot_spatial_feature_mart(
     box_labels = []
     box_colors = []
     for c in active_corridors:
-        vals = df.filter(pl.col("corridor") == c)[
-            "topographical_friction_index"
-        ].to_numpy()
+        vals = df.filter(pl.col("corridor") == c)["topographical_friction_index"].to_numpy()
         if len(vals) > 0:
             box_data.append(vals)
             box_labels.append(c.split("_")[0].upper())
@@ -214,9 +208,7 @@ def plot_spatial_feature_mart(
         loc="left",
         color="#1a2530",
     )
-    ax1.set_xlabel(
-        "Topographical Friction Index (Dimensionless)", fontsize=10, fontweight="bold"
-    )
+    ax1.set_xlabel("Topographical Friction Index (Dimensionless)", fontsize=10, fontweight="bold")
     ax1.set_ylabel("Probability Density", fontsize=10, fontweight="bold")
     ax1.grid(True, linestyle=":", alpha=0.6)
     ax1.legend(
@@ -245,9 +237,7 @@ def plot_spatial_feature_mart(
         ("topographical_friction_index", "TFI"),
         ("sin_slope_angle", "sin(θ) (VSP)"),
     ]
-    available_pairs = [
-        (col, name) for col, name in candidate_features if col in df.columns
-    ]
+    available_pairs = [(col, name) for col, name in candidate_features if col in df.columns]
     corr_features = [col for col, _ in available_pairs]
     feature_names = [name for _, name in available_pairs]
 
@@ -320,8 +310,7 @@ def plot_spatial_feature_mart(
         if total_c == 0:
             continue
         pcts = [
-            len(sub_c.filter(pl.col("grade_class") == reg)) / total_c * 100.0
-            for reg in regimes
+            len(sub_c.filter(pl.col("grade_class") == reg)) / total_c * 100.0 for reg in regimes
         ]
         offset = (idx - 1) * bar_width
         bars = ax3.bar(
@@ -425,9 +414,7 @@ def plot_spatial_feature_mart(
 
     if sc is not None:
         cbar4 = fig.colorbar(sc, ax=ax4, fraction=0.046, pad=0.04)
-        cbar4.set_label(
-            "Topographical Friction Index (TFI)", fontsize=9, fontweight="bold"
-        )
+        cbar4.set_label("Topographical Friction Index (TFI)", fontsize=9, fontweight="bold")
 
     ax4.set_title(
         "D. Joint Geometric Feature Space: |Grade| vs. Curvature vs. TFI",
@@ -436,12 +423,8 @@ def plot_spatial_feature_mart(
         loc="left",
         color="#1a2530",
     )
-    ax4.set_xlabel(
-        "Absolute Vertical Grade |Grade| (%)", fontsize=10, fontweight="bold"
-    )
-    ax4.set_ylabel(
-        "Horizontal Menger Curvature κ (m⁻¹)", fontsize=10, fontweight="bold"
-    )
+    ax4.set_xlabel("Absolute Vertical Grade |Grade| (%)", fontsize=10, fontweight="bold")
+    ax4.set_ylabel("Horizontal Menger Curvature κ (m⁻¹)", fontsize=10, fontweight="bold")
     ax4.set_xlim(-0.1, 4.2)
     ax4.set_ylim(-0.0001, 0.0026)
     ax4.grid(True, linestyle=":", alpha=0.6)

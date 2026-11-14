@@ -107,7 +107,7 @@ def main() -> None:
     logger.info("  - Jerk S-G Energy:        %.2e", metrics["jerk_savgol"])
 
     # Generate Visual Verification Artifacts
-    figures_dir = Path("outputs/figures")
+    figures_dir = Path("outputs/figures/phase1")
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     fig1_path = figures_dir / "p1_elevation_grade_profile.png"

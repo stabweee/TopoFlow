@@ -31,7 +31,7 @@ def plot_horizontal_curvature(
 
     Args:
         stations_gdf: GeoDataFrame containing 100m station records with curvature metrics.
-        output_path: Destination file path (defaults to outputs/figures/p1_horizontal_curvature.png).
+        output_path: Destination file path (defaults to outputs/figures/phase1/p1_horizontal_curvature.png).
         settings: Optional Settings instance.
         dpi: Image resolution.
 
@@ -57,7 +57,9 @@ def plot_horizontal_curvature(
         raise ValueError(f"stations_gdf missing required columns: {missing}")
 
     cfg = settings or get_settings()
-    target_path = output_path or (cfg.outputs_dir / "figures" / "p1_horizontal_curvature.png")
+    target_path = output_path or (
+        cfg.outputs_dir / "figures" / "phase1" / "p1_horizontal_curvature.png"
+    )
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig = plt.figure(figsize=(16, 10), constrained_layout=True)

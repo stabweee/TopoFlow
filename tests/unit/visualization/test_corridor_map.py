@@ -48,7 +48,7 @@ class TestCorridorMapPlotting:
         custom_settings = Settings(project_root=tmp_path)
         saved_path = plot_corridors(sample_gdf, settings=custom_settings, dpi=80)
 
-        expected = tmp_path / "outputs" / "figures" / "p1_corridor_centerlines.png"
+        expected = tmp_path / "outputs" / "figures" / "phase1" / "p1_corridor_centerlines.png"
         assert saved_path == expected
         assert expected.exists()
 

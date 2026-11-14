@@ -1,8 +1,8 @@
 """Visualization module for highway elevation profiles and Savitzky-Golay vs raw discrete difference diagnostics.
 
 Generates publication-ready figures for Phase 1 milestone visual verification:
-1. outputs/figures/p1_elevation_grade_profile.png (Corridor elevation, vertical grade, curvature, and control flatness)
-2. outputs/figures/p1_savgol_vs_raw_differences.png (Empirical performance comparison of Savitzky-Golay vs raw finite differences)
+1. outputs/figures/phase1/p1_elevation_grade_profile.png (Corridor elevation, vertical grade, curvature, and control flatness)
+2. outputs/figures/phase1/p1_savgol_vs_raw_differences.png (Empirical performance comparison of Savitzky-Golay vs raw finite differences)
 """
 
 from __future__ import annotations
@@ -49,7 +49,11 @@ def plot_corridor_elevation_profile(
     active_settings = settings or get_settings()
     if output_path is None:
         output_path = (
-            active_settings.project_root / "outputs" / "figures" / "p1_elevation_grade_profile.png"
+            active_settings.project_root
+            / "outputs"
+            / "figures"
+            / "phase1"
+            / "p1_elevation_grade_profile.png"
         )
 
     output_path = Path(output_path)
@@ -296,6 +300,7 @@ def plot_savgol_vs_raw_differences(
             active_settings.project_root
             / "outputs"
             / "figures"
+            / "phase1"
             / "p1_savgol_vs_raw_differences.png"
         )
 
