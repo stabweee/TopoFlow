@@ -33,7 +33,7 @@ def plot_corridors(
 
     Args:
         gdf: GeoDataFrame containing corridor geometries (from OSMExtractor).
-        output_path: Target image file path (defaults to outputs/figures/p1_corridor_centerlines.png).
+        output_path: Target image file path (defaults to outputs/figures/phase1/p1_corridor_centerlines.png).
         settings: Optional Settings instance.
         dpi: Resolution of saved figure.
 
@@ -41,7 +41,9 @@ def plot_corridors(
         Path to the saved figure image.
     """
     cfg = settings or get_settings()
-    target_path = output_path or (cfg.outputs_dir / "figures" / "p1_corridor_centerlines.png")
+    target_path = output_path or (
+        cfg.outputs_dir / "figures" / "phase1" / "p1_corridor_centerlines.png"
+    )
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     corridor_ids = list(gdf["corridor_id"].unique())

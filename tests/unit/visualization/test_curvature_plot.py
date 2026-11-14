@@ -53,7 +53,7 @@ class TestCurvaturePlotting:
             sample_stations_gdf, settings=custom_settings, dpi=80
         )
 
-        expected = tmp_path / "outputs" / "figures" / "p1_horizontal_curvature.png"
+        expected = tmp_path / "outputs" / "figures" / "phase1" / "p1_horizontal_curvature.png"
         assert saved_path == expected
         assert expected.exists()
 

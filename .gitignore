@@ -27,6 +27,7 @@ data/interim/*
 data/processed/*
 !data/processed/**/.gitkeep
 *.parquet
+!tests/fixtures/*.parquet
 *.laz
 *.dem
 *.tif
