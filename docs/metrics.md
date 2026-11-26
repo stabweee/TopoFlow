@@ -9,7 +9,7 @@
 | Metric Name | Symbol / Code | Unit | Mathematical Definition | Domain Interpretation & Bounds |
 | :--- | :---: | :---: | :--- | :--- |
 | **Linear Chainage** | $x_i$ / `chainage_m` | meters ($\text{m}$) | $x_i = i \times 100.0$ along centerline | Arc-length distance from the upstream corridor origin. Equidistant $100\text{m}$ grid. |
-| **Station Elevation** | $z_i$ / `elevation_m` | meters ($\text{m}$) NAVD88 | $z_i = z_{\text{bare\_earth}}$ (roadway) or $z_{\text{lidar\_class17}}$ (bridge deck) | Absolute surface height. Validated against official VDOT/MDOT SHA As-Built drawings ($\le 0.005\text{m}$ error on bridge span). |
+| **Station Elevation** | $z_i$ / `elevation_m` | meters ($\text{m}$) NAVD88 | $z_i = z_{\text{bare\_earth}}$ (roadway) or $z_{\text{lidar\_class17}}$ (bridge deck) | Absolute surface height. Provenance in `elevation_source` (`usgs_epqs`, `lidar_c17`, `interpolated`). Not yet independently validated. |
 | **Menger Curvature** | $\kappa_i$ / `curvature_kappa` | $\text{m}^{-1}$ (or $\text{km}^{-1}$) | $\kappa = \frac{4 A}{\|p_1 - p_2\| \|p_2 - p_3\| \|p_3 - p_1\|}$ | Reciprocal of the radius of the osculating circumcircle through stations $(i-1, i, i+1)$. Includes $10^{-9}$ numerical zero-guard. |
 | **Radius of Curvature** | $R_i$ / `radius_m` | meters ($\text{m}$) | $R_i = \min\left(\frac{1}{\kappa_i}, 10000.0\right)$ | Radius of horizontal curve. AASHTO interstate guideline $R \ge 450\text{m}$ at $60\text{ mph}$. Capped at $10,000\text{m}$ on tangents. |
 | **Projected Coordinates** | $(X_i, Y_i)$ / `geometry` | meters ($\text{m}$) | NAD83 / UTM Zone 18N (`EPSG:26918`) | Metric Cartesian plane coordinates. Distortions $< 0.04\%$ across VA and MD. |
@@ -59,9 +59,9 @@ $$\text{TFI}_i = w_g \frac{|\text{Grade}_i|}{\text{Grade}_{\text{norm}}} + w_\ka
   - Grade normalizing factor: $\text{Grade}_{\text{norm}} = 3.0\%$ (design limit for interstate rolling terrain)
   - Curvature normalizing factor: $\kappa_{\text{norm}} = 0.002\text{ m}^{-1}$ (corresponding to $R = 500\text{m}$)
 * **Observed Corridor Distributions**:
-  - **I-495 American Legion Bridge**: $\mu_{\text{TFI}} = 0.591$ (high friction shoulder, max $1.26$)
-  - **I-95 Lorton-Woodbridge (Control)**: $\mu_{\text{TFI}} = 0.414$ (tangent-dominated)
-  - **I-295 Anacostia (Control)**: $\mu_{\text{TFI}} = 0.438$ (urban flatland)
+  - **I-495 American Legion Bridge**: $\mu_{\text{TFI}} = 0.598$
+  - **I-95 Lorton-Woodbridge (Control)**: $\mu_{\text{TFI}} = 0.426$
+  - **I-295 Anacostia (Control)**: $\mu_{\text{TFI}} = 0.438$ (rolling, not flat: peak grades −3.72% / +3.67%)
 
 ### Vehicle Emissions Slope Parameter
 $$\text{Slope}_i = \sin(\theta_i) \approx \frac{\text{Grade}_i}{100.0}$$

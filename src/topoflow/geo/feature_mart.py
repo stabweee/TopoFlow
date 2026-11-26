@@ -186,6 +186,8 @@ def build_spatial_feature_mart(
         "is_sag",
         "is_crest",
         "is_bridge_deck",
+        "elevation_source",
+        "grade_edge_effect",
     ]
     # Filter elevation cols to those present
     available_e_cols = [c for c in elevation_cols if c in df_elevation.columns]

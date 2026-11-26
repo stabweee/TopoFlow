@@ -76,8 +76,8 @@ def plot_spatial_feature_mart(
     corridors = ["alb_i495", "i95_lorton_woodbridge", "i295_anacostia"]
     corridor_labels = {
         "alb_i495": "I-495 ALB (Sag Study)",
-        "i95_lorton_woodbridge": "I-95 Lorton (Flat Control)",
-        "i295_anacostia": "I-295 Anacostia (Flat Control)",
+        "i95_lorton_woodbridge": "I-95 Lorton (Control)",
+        "i295_anacostia": "I-295 Anacostia (Control)",
     }
     corridor_colors = {
         "alb_i495": "#c0392b",

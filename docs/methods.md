@@ -63,21 +63,20 @@ Standard USGS bare-earth DEM rasters are "hydro-enforced": over water bodies, el
 1. **Bare-Earth Roadway Sampling**: Queries the USGS 1-meter 3DEP EPQS service for all 406 station coordinates across Maryland and Virginia.
 2. **LiDAR Point Cloud Traversal**: Traverses the Entwine Point Tile (EPT) octree over Fairfax County, streaming and filtering $90,828$ authentic laser returns.
 3. **ASPRS Class 17 Filtering**: Extracts ASPRS Class 17 (Bridge Deck) returns within a 35m spatial search buffer of the bridge centerline.
-4. **Pavement Elevation Isolation**: Fits a high-confidence asphalt deck elevation ($Z \approx 35.75\text{m} - 46.14\text{m}$ NAVD88) across Stations 37–41 (450m Potomac span).
-5. **As-Built Blueprint Verification**: Compares extracted deck elevations against official VDOT/MDOT SHA As-Built reference profiles (`configs/bridge_profile.csv`), passing with maximum error $\le 0.0050\text{m}$ (well within the $0.20\text{m}$ engineering tolerance).
+4. **Pavement Elevation Isolation**: Takes the median Class 17 elevation within 35 m of each station, giving measured ASPRS Class 17 deck returns on ALB inner-loop stations 37–40 (44.2 m → 35.9 m NAVD88; OSM bridge way ≈ chainage 3,661–4,088 m, ≈427 m).
+5. **Independent Validation (pending)**: `validate_bridge_as_built` compares deck elevations against an independent reference profile (`configs/bridge_asbuilt_reference.csv`, every row must cite a `source`, tolerance 0.20 m). Deck elevations are currently not yet validated against an independent reference (no cited as-built profile is in the repo; the former `configs/bridge_profile.csv` was derived from this pipeline's own output and was removed as circular).
 
 ---
 
-## 5. Roadway Continuity & Water-Crossing Restoration
+## 5. Bridge Stations Without LiDAR & Elevation Provenance
 
-* **Implementation**: [`src/topoflow/geo/elevation.py`](file:///c:/Users/hsu_s/Projects/Personal/TopoFlow/src/topoflow/geo/elevation.py)
+* **Implementation**: [`src/topoflow/geo/elevation.py`](file:///c:/Users/hsu_s/Projects/Personal/TopoFlow/src/topoflow/geo/elevation.py), [`src/topoflow/geo/osm_extractor.py`](file:///c:/Users/hsu_s/Projects/Personal/TopoFlow/src/topoflow/geo/osm_extractor.py)
 
 ### Method Overview
-1. **River Trench Detection**: Detects bare-earth drops over unbridged water-crossings where DEM heights drop into sea-level tidal waters ($Z < 2\text{m}$) accompanied by unphysical grade spikes ($> \pm 7.5\%$).
-2. **Abutment-to-Abutment Continuity**: Replaces hydro-enforced trench dips with synthetic linear roadway continuity between physical bridge abutments:
-   - *Occoquan River Crossing (I-95)*: Restored Stations 21–22 (NB) and 55–56 (SB), eliminating artificial $\pm 7.8\%$ spikes and restoring interstate Piedmont grades ($\le \pm 2.5\%$).
-   - *Underpass Cut Smoothing (I-295)*: Smoothed intermediate underpass cuts (Oxon Run, Suitland Pkwy, Howard Rd).
-   - *Maryland Approach Continuity (I-495)*: Eliminated underpass trench dips between Chainage 4,100m and 4,650m.
+1. **Per-Station Bridge Tags**: Each OSM way is located along its stitched carriageway as a chainage interval (EPSG:26918). A station is a bridge station only if it lies on a `bridge`-tagged way.
+2. **Measured Sources Only**: Every station takes USGS 3DEP EPQS bare-earth elevation, overridden by LiDAR Class 17 deck returns where they exist. A station with no measurement raises an error; nothing is invented.
+3. **Flagged Interpolation**: Bare-earth DEMs sample the ground beneath bridge decks (Occoquan River on I-95; MacArthur Blvd / Clara Barton Pkwy overpasses on the ALB Maryland approach; Oxon Run, Suitland Pkwy, Howard Rd on I-295). Bridge stations without LiDAR are linearly interpolated between the nearest measured stations and tagged `elevation_source = "interpolated"` (ALB 5, I-95 9, I-295 9 stations). All other stations keep their measured values unchanged.
+4. **Edge Flag**: The first and last two stations of each carriageway are tagged `grade_edge_effect` (truncated Savitzky-Golay window); exclude them from grade-sensitive analysis.
 
 ---
 
@@ -96,9 +95,9 @@ $$\left.\frac{d^2z}{dx^2}\right\|_i = 2 \cdot c_2$$
 
 ### Empirical Superiority
 Comparing Savitzky-Golay analytical differentiation against raw two-point finite differences:
-* **Total Variation (TV)**: Reduced by $30.6\%$ (from $37.53\%$ raw down to $26.04\%$).
-* **Jerk Energy**: Attenuated by $6.75\times$ (from $8.64 \times 10^{-9}$ down to $1.28 \times 10^{-9}\text{ m}^{-2}$).
-* **Estimation RMSE**: Error against synthetic ground-truth profiles decreased by $1.95\times$ ($0.275\%$ raw down to $0.141\%$).
+* **Total Variation (TV)**: Reduced by $29.4\%$ (from $36.31\%$ raw down to $25.62\%$) on the measured ALB inner-loop profile.
+* **Jerk Energy**: Attenuated by $7.1\times$ (from $7.74 \times 10^{-9}$ down to $1.09 \times 10^{-9}\text{ m}^{-2}$).
+* **Synthetic illustration only**: on a known synthetic parabola with σ = 5 cm noise, grade RMSE falls $1.95\times$ ($0.275\%$ → $0.141\%$). This illustrates the filter; it is **not** a measurement of accuracy on real data.
 
 ---
 

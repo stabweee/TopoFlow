@@ -2,7 +2,7 @@
 
 **Project**: Spatio-Temporal Topographical Friction & Causal Impact Modeling of the American Legion Bridge Sag Bottleneck  
 **Primary Study Corridor**: I-495 Capital Beltway (Potomac River Sag Crossing, Cabin John, MD to McLean, VA)  
-**Control Corridors**: I-95 (Lorton/Woodbridge Flat Tangents), I-295 (Anacostia Freeway Flat Tangents)  
+**Control Corridors**: I-95 (Lorton/Woodbridge), I-295 (Anacostia Freeway); rolling terrain, not flat (see `docs/metrics.md`)  
 
 ---
 
@@ -17,6 +17,7 @@ docs/
 ├── metrics.md              # Quantitative Metrics Dictionary (definitions, formulas, units, bounds)
 ├── methods.md              # Algorithmic & Methodological Manual (spatial, engineering, physical methods)
 ├── decisions.md            # Architectural Decision Record (Tier 1/2/3 rationale & trade-offs)
+├── control_corridor_assessment.md # Measured grade comparison of study vs control corridors (open decision)
 ├── system_overview.md      # End-to-End System Pipeline & Architecture Whitepaper
 └── domain_foundations.md   # Transport Physics, Kinematics & Econometric Literature Foundations
 ```
@@ -45,7 +46,7 @@ High-level architectural summaries of the mathematical, spatial, and econometric
 * 100-Meter Equidistant Spatial Discretization & Anti-Loopback Filtering
 * Menger Osculating Circle Curvature Formulation
 * Hybrid Bare-Earth (USGS 3DEP EPQS) & LiDAR ASPRS Class 17 Bridge Deck Ingestion
-* Water-Crossing Trench & Underpass Continuity Restoration
+* OSM-Tagged Bridge Interpolation with `elevation_source` Provenance Flags
 * Savitzky-Golay Polynomial Differentiation & Jitter Attenuation
 * Dimensional Parquet Mart Assembly & Zero-Copy DuckDB Registration
 

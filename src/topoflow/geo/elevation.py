@@ -1,10 +1,11 @@
 """Hybrid elevation extraction, LiDAR ASPRS Class 17 bridge profiling, and Savitzky-Golay grade estimation.
 
-Ingests 1-meter NAVD88 bare-earth DEM rasters for land approaches and flat control
-corridors, extracts asphalt pavement elevations from raw ASPRS Class 17 (Bridge Deck)
-returns in USGS 3DEP LiDAR point clouds (.laz), validates deck heights against
-VDOT/MDOT SHA As-Built structural drawings, and computes continuous analytical vertical
-grade (% slope) and vertical curvature via Savitzky-Golay polynomial filtering.
+Uses measured USGS 3DEP bare-earth elevations (EPQS / DEM rasters) for land stations,
+measured ASPRS Class 17 (Bridge Deck) LiDAR returns where available, and linear
+interpolation between measured neighbours only for OSM-tagged bridge stations that lack
+deck returns. Every station records its ``elevation_source``; no elevation is invented.
+Optionally validates deck heights against an independent, cited reference profile, and
+computes analytical vertical grade (% slope) and curvature via Savitzky-Golay filtering.
 """
 
 from __future__ import annotations
@@ -16,14 +17,28 @@ from typing import Any
 import geopandas as gpd
 import numpy as np
 import polars as pl
+import pyproj
 import rasterio
 from scipy.signal import savgol_filter
 from scipy.spatial import cKDTree
 
 from topoflow.config import Settings, get_settings
-from topoflow.constants import CRS_METRIC
+from topoflow.constants import CRS_METRIC, CRS_WGS84
 
 logger = logging.getLogger(__name__)
+
+# Provenance labels for the ``elevation_source`` column of the elevation mart.
+ELEVATION_SOURCE_EPQS: str = "usgs_epqs"
+ELEVATION_SOURCE_DEM: str = "usgs_dem"
+ELEVATION_SOURCE_LIDAR: str = "lidar_c17"
+ELEVATION_SOURCE_INTERPOLATED: str = "interpolated"
+# Bridge station with no deck measurement and no anchors on both sides: the value is the
+# bare-earth surface beneath the bridge, NOT the deck. Exclude from deck-sensitive analysis.
+ELEVATION_SOURCE_UNDER_BRIDGE: str = "bare_earth_under_bridge"
+
+# Maximum horizontal offset (EPSG:26918 meters) between a cached EPQS sample and the
+# station it is joined to before the cache is considered stale.
+EPQS_MAX_STATION_OFFSET_M: float = 0.5
 
 
 class ElevationExtractorError(Exception):
@@ -151,15 +166,17 @@ class ElevationExtractor:
         as_built_csv_path: Path,
         tolerance_m: float = 0.2,
     ) -> bool:
-        """Validate extracted bridge deck elevations against official As-Built blueprints.
+        """Validate extracted bridge deck elevations against an independent reference profile.
 
-        Compares LiDAR deck heights against VDOT/MDOT SHA As-Built reference profiles
-        (NBI Structure ID 100000495000010) and asserts discrepancy <= tolerance_m.
+        The reference must be independent of this pipeline (e.g. VDOT/MDOT SHA as-built
+        plan sheets or a separate survey). Every reference row must cite its origin in a
+        non-empty ``source`` column; references derived from TopoFlow's own output are
+        circular and must not be used.
 
         Args:
             extracted_deck_z: 1D array of extracted bridge deck heights (meters).
             bridge_stations_chainage_m: 1D array of bridge chainage offsets (meters).
-            as_built_csv_path: Path to configs/bridge_profile.csv.
+            as_built_csv_path: CSV with ``station_offset_m``, ``elevation_navd88_m``, ``source``.
             tolerance_m: Maximum acceptable elevation error in meters (default 0.2m / 20cm).
 
         Returns:
@@ -167,13 +184,20 @@ class ElevationExtractor:
 
         Raises:
             FileNotFoundError: If as_built_csv_path does not exist.
-            ValueError: If maximum discrepancy exceeds tolerance_m.
+            ValueError: If rows lack a cited ``source`` or discrepancy exceeds tolerance_m.
         """
         as_built_csv_path = Path(as_built_csv_path)
         if not as_built_csv_path.exists():
             raise FileNotFoundError(f"As-built reference CSV not found at: {as_built_csv_path}")
 
         df_as_built = pl.read_csv(as_built_csv_path, comment_prefix="#")
+        if "source" not in df_as_built.columns:
+            raise ValueError("Reference profile must include a per-row 'source' citation column.")
+        uncited = df_as_built.filter(
+            pl.col("source").is_null() | (pl.col("source").cast(pl.Utf8).str.strip_chars() == "")
+        )
+        if uncited.height > 0:
+            raise ValueError(f"{uncited.height} reference row(s) have no cited 'source'.")
         ref_offsets = df_as_built["station_offset_m"].to_numpy().astype(np.float64)
         ref_z = df_as_built["elevation_navd88_m"].to_numpy().astype(np.float64)
 
@@ -204,6 +228,72 @@ class ElevationExtractor:
         )
         return True
 
+    @staticmethod
+    def _align_epqs_to_stations(
+        gdf_metric: gpd.GeoDataFrame,
+        segment_ids: list[str],
+        df_epqs: pl.DataFrame,
+        max_offset_m: float = EPQS_MAX_STATION_OFFSET_M,
+    ) -> np.ndarray:
+        """Join cached EPQS elevations to stations, refusing stale or ambiguous cache rows.
+
+        The EPQS cache is keyed by ``segment_id``; if station geometry changes, the same id
+        can refer to a different location. When the cache carries ``longitude``/``latitude``
+        the sampled point must lie within ``max_offset_m`` (EPSG:26918) of the station.
+
+        Returns:
+            Elevations aligned to ``segment_ids`` (NaN where the cache has no value).
+
+        Raises:
+            ElevationExtractorError: On conflicting duplicate ids or stale coordinates.
+        """
+        conflicts = (
+            df_epqs.group_by("segment_id")
+            .agg(pl.col("elevation_usgs_m").n_unique().alias("n"))
+            .filter(pl.col("n") > 1)
+        )
+        if conflicts.height:
+            raise ElevationExtractorError(
+                f"EPQS cache has conflicting elevations for {conflicts.height} segment_id(s): "
+                f"{conflicts['segment_id'].to_list()[:10]}"
+            )
+
+        has_coords = {"longitude", "latitude"}.issubset(df_epqs.columns)
+        cols = ["segment_id", "elevation_usgs_m"] + (
+            ["longitude", "latitude"] if has_coords else []
+        )
+        joined = pl.DataFrame({"segment_id": segment_ids}).join(
+            df_epqs.select(cols).unique("segment_id", keep="first"),
+            on="segment_id",
+            how="left",
+            maintain_order="left",
+        )
+        z = joined["elevation_usgs_m"].cast(pl.Float64).fill_nan(None).to_numpy()
+
+        if not has_coords:
+            logger.warning("EPQS cache has no coordinates; station alignment cannot be verified.")
+            return z
+
+        lon = joined["longitude"].cast(pl.Float64).to_numpy()
+        lat = joined["latitude"].cast(pl.Float64).to_numpy()
+        cached = np.isfinite(lon) & np.isfinite(lat)
+        ex, ny = pyproj.Transformer.from_crs(CRS_WGS84, CRS_METRIC, always_xy=True).transform(
+            lon, lat
+        )
+        offset = np.hypot(
+            np.asarray(ex) - gdf_metric.geometry.x.to_numpy(),
+            np.asarray(ny) - gdf_metric.geometry.y.to_numpy(),
+        )
+        stale = cached & (offset > max_offset_m)
+        if np.any(stale):
+            stale_ids = [segment_ids[i] for i in np.where(stale)[0]]
+            raise ElevationExtractorError(
+                f"EPQS cache is stale: {len(stale_ids)} station(s) moved more than "
+                f"{max_offset_m} m since sampling (max {float(np.nanmax(offset)):.1f} m), "
+                f"e.g. {stale_ids[:5]}. Re-run EPQS ingestion with force_download=True."
+            )
+        return z
+
     def smooth_elevation_profile(
         self,
         chainage_m: np.ndarray,
@@ -229,7 +319,9 @@ class ElevationExtractor:
         chainage_m = np.asarray(chainage_m, dtype=np.float64)
 
         if len(elevations) < 3:
-            return elevations.copy(), np.zeros_like(elevations), np.zeros_like(elevations)
+            # Too few stations to estimate derivatives: report them as unknown, not 0%.
+            nan_arr = np.full_like(elevations, np.nan)
+            return elevations.copy(), nan_arr, nan_arr.copy()
 
         if len(elevations) < window_length:
             window_length = max(
@@ -242,10 +334,11 @@ class ElevationExtractor:
         if np.any(nans):
             valid_x = chainage_m[~nans]
             valid_y = elevations[~nans]
-            if len(valid_x) >= 2:
-                elevations_clean = np.interp(chainage_m, valid_x, valid_y)
-            else:
-                elevations_clean = np.nan_to_num(elevations, nan=45.0)
+            if len(valid_x) < 2:
+                raise ElevationExtractorError(
+                    "Cannot smooth an elevation profile with fewer than 2 measured values."
+                )
+            elevations_clean = np.interp(chainage_m, valid_x, valid_y)
         else:
             elevations_clean = elevations.copy()
 
@@ -400,7 +493,10 @@ class ElevationExtractor:
             usgs_epqs_path: Optional path to authentic USGS EPQS bare-earth Parquet dataset.
 
         Returns:
-            Polars DataFrame with the 15-column canonical schema.
+            Polars DataFrame with the 17-column canonical schema (incl. ``elevation_source``, ``grade_edge_effect``).
+
+        Raises:
+            ElevationExtractorError: If any station has no measured elevation.
         """
         if len(stations_gdf) == 0:
             return pl.DataFrame()
@@ -410,139 +506,147 @@ class ElevationExtractor:
             gdf = gdf.to_crs(CRS_METRIC)
 
         has_bridge_series = (
-            gdf["has_bridge"].to_numpy().astype(bool)
+            gdf["has_bridge"].fillna(False).astype(bool).to_numpy()
             if "has_bridge" in gdf.columns
             else np.zeros(len(gdf), dtype=bool)
         )
 
-        raw_elevations = np.full(len(gdf), np.nan, dtype=np.float64)
-        is_bridge_deck_arr = np.zeros(len(gdf), dtype=bool)
+        n_total = len(gdf)
+        raw_elevations = np.full(n_total, np.nan, dtype=np.float64)
+        elevation_source = np.full(n_total, "", dtype=object)
+        # Bridge deck flag comes from the per-station OSM bridge tag (TF-010/TF-011).
+        is_bridge_deck_arr = has_bridge_series.copy()
+        segment_ids = (
+            gdf["segment_id"].astype(str).tolist()
+            if "segment_id" in gdf.columns
+            else [f"seg_{i:04d}" for i in range(n_total)]
+        )
 
-        # 1. Ingest authentic USGS EPQS bare-earth elevations if provided
+        # 1. Authentic USGS 3DEP EPQS bare-earth elevations (vectorized join on segment_id)
         if usgs_epqs_path is not None and Path(usgs_epqs_path).exists():
             df_epqs = pl.read_parquet(usgs_epqs_path)
-            if "segment_id" in df_epqs.columns and "elevation_usgs_m" in df_epqs.columns:
-                epqs_lookup = dict(
-                    zip(
-                        df_epqs["segment_id"].to_list(),
-                        df_epqs["elevation_usgs_m"].to_list(),
-                        strict=False,
-                    )
-                )
-                for i, seg_id in enumerate(gdf["segment_id"]):
-                    if seg_id in epqs_lookup and np.isfinite(epqs_lookup[seg_id]):
-                        raw_elevations[i] = float(epqs_lookup[seg_id])
+            if {"segment_id", "elevation_usgs_m"}.issubset(df_epqs.columns):
+                epqs_z = self._align_epqs_to_stations(gdf, segment_ids, df_epqs)
+                hit = np.isfinite(epqs_z)
+                raw_elevations[hit] = epqs_z[hit]
+                elevation_source[hit] = ELEVATION_SOURCE_EPQS
 
-        # 2. Sample bare-earth DEM for stations inside DEM raster bounds (fallback / fixture)
+        # 2. Bare-earth DEM raster for stations not yet measured
         if dem_path is not None and Path(dem_path).exists():
             dem_z = self.extract_bare_earth_dem(gdf, Path(dem_path))
-            valid_dem = np.isfinite(dem_z)
-            # Only update where raw_elevations is not yet set
-            fill_mask = np.isnan(raw_elevations) & valid_dem
+            fill_mask = np.isnan(raw_elevations) & np.isfinite(dem_z)
             raw_elevations[fill_mask] = dem_z[fill_mask]
+            elevation_source[fill_mask] = ELEVATION_SOURCE_DEM
 
-        # 3. Extract ASPRS Class 17 returns for bridge stations
+        # 3. Measured ASPRS Class 17 deck returns override bare-earth on bridge stations only.
+        # Deck returns near at-grade stations belong to overpasses, ramps or the opposite
+        # carriageway and must not replace the roadway's own surface.
         if laz_path is not None and Path(laz_path).exists():
-            bridge_elevations = self.extract_bridge_deck_laz(
-                gdf, Path(laz_path), buffer_radius_m=35.0
+            deck_z = self.extract_bridge_deck_laz(gdf, Path(laz_path), buffer_radius_m=35.0)
+            has_deck = np.isfinite(deck_z)
+            valid_deck = has_deck & has_bridge_series
+            ignored = int((has_deck & ~has_bridge_series).sum())
+            if ignored:
+                logger.info(
+                    "Ignored Class 17 returns near %d non-bridge station(s) "
+                    "(overpass/ramp/adjacent deck)",
+                    ignored,
+                )
+            raw_elevations[valid_deck] = deck_z[valid_deck]
+            elevation_source[valid_deck] = ELEVATION_SOURCE_LIDAR
+
+        # 4. No station may be left without a measurement: never invent elevations.
+        missing = np.isnan(raw_elevations)
+        if np.any(missing):
+            missing_ids = [segment_ids[i] for i in np.where(missing)[0]]
+            raise ElevationExtractorError(
+                f"{len(missing_ids)} station(s) have no measured elevation "
+                f"(EPQS/DEM/LiDAR): {missing_ids[:10]}"
             )
-            valid_deck = np.isfinite(bridge_elevations)
-            raw_elevations[valid_deck] = bridge_elevations[valid_deck]
-            is_bridge_deck_arr[valid_deck] = True
 
-        # Flag bridge stations within the ALB Potomac River span (Chainage 3700m - 4150m, 450m length)
-        is_alb_corridor = (
-            (gdf["corridor_id"] == "alb_i495").to_numpy()
-            if "corridor_id" in gdf.columns
-            else np.zeros(len(gdf), dtype=bool)
-        )
-        chainage_series = (
-            gdf["chainage_m"].to_numpy().astype(np.float64)
-            if "chainage_m" in gdf.columns
-            else np.zeros(len(gdf), dtype=np.float64)
-        )
-        alb_bridge_span_mask = (
-            is_alb_corridor & (chainage_series >= 3700.0) & (chainage_series <= 4150.0)
-        )
-        is_bridge_deck_arr[alb_bridge_span_mask] = True
+        smooth_elevations = np.empty(n_total, dtype=np.float64)
+        grade_pct_arr = np.empty(n_total, dtype=np.float64)
+        grade_raw_pct_arr = np.empty(n_total, dtype=np.float64)
+        curvature_arr = np.empty(n_total, dtype=np.float64)
+        is_sag_arr = np.zeros(n_total, dtype=bool)
+        is_crest_arr = np.zeros(n_total, dtype=bool)
+        # Stations whose 5-station S-G window is truncated by the carriageway end; their
+        # grades are less reliable and should be excluded from grade-sensitive analysis.
+        grade_edge_effect_arr = np.zeros(n_total, dtype=bool)
+        sg_window = 5
+        half_window = sg_window // 2
 
-        # Roadway continuity correction: For stations immediately following the bridge on alb_i495
-        # climbing toward the Maryland bluffs (Chainage 4100m to 4650m), the bare-earth DEM digitally
-        # removes overpass structures and samples the floor of underpasses (MacArthur Blvd at ~32.6m,
-        # C&O Canal trench / Clara Barton Pkwy at ~37.2m). The engineered highway sits on an elevated
-        # approach viaduct and embankment climbing continuously out of the Potomac gorge (35.75m)
-        # to the Maryland bluffs (55.76m). Restore the continuous engineered roadway profile
-        # where bare-earth elevation sampled underpass trenches below the engineered grade line.
-        if np.any(is_alb_corridor):
-            alb_indices = np.where(is_alb_corridor)[0]
-            for idx in alb_indices:
-                s = chainage_series[idx]
-                if 4100.0 < s <= 4650.0:
-                    t = (s - 4100.0) / 600.0
-                    z_engineered = 35.75 + (55.76 - 35.75) * (t**0.9)
-                    if np.isnan(raw_elevations[idx]) or raw_elevations[idx] < z_engineered:
-                        raw_elevations[idx] = z_engineered
-
-        # 4. Fallback for mock/offline testing if raster or laz was omitted or has missing values
-        if np.any(np.isnan(raw_elevations)):
-            for i in range(len(gdf)):
-                if np.isnan(raw_elevations[i]):
-                    northing = gdf.geometry.iloc[i].y
-                    # Check if station is physically inside the Potomac River bridge deck crossing
-                    if has_bridge_series[i] and (4315400.0 <= northing <= 4316450.0):
-                        t = (northing - 4315400.0) / 1000.0
-                        raw_elevations[i] = 43.20 - 2.5 * t * (1.0 - t) + 1.85 * (t**2)
-                        is_bridge_deck_arr[i] = True
-                    else:
-                        dist_to_gorge = abs(northing - 4315800.0) / 3000.0
-                        raw_elevations[i] = 42.0 + 50.0 * min(1.0, dist_to_gorge**1.5)
-
-        # Process smoothing and derivatives per corridor and direction group
-        smooth_elevations = np.empty(len(gdf), dtype=np.float64)
-        grade_pct_arr = np.empty(len(gdf), dtype=np.float64)
-        grade_raw_pct_arr = np.empty(len(gdf), dtype=np.float64)
-        curvature_arr = np.empty(len(gdf), dtype=np.float64)
-        is_sag_arr = np.zeros(len(gdf), dtype=bool)
-        is_crest_arr = np.zeros(len(gdf), dtype=bool)
-
-        for _, group_indices in gdf.groupby(["corridor_id", "direction"]).groups.items():
+        for (corridor_key, direction_key), group_indices in gdf.groupby(
+            ["corridor_id", "direction"]
+        ).groups.items():
             idx = np.asarray(group_indices)
-            sort_order = np.argsort(gdf.iloc[idx]["chainage_m"].to_numpy())
-            idx = idx[sort_order]
+            idx = idx[np.argsort(gdf.iloc[idx]["chainage_m"].to_numpy())]
             sub_chainage = gdf.iloc[idx]["chainage_m"].to_numpy().astype(np.float64)
             sub_z = raw_elevations[idx].copy()
-            n = len(sub_z)
+            sub_src = elevation_source[idx].copy()
 
-            # 1. Bridge water-crossing continuity: Bare-earth DEM strips bridge decks,
-            # causing elevations to plunge into tidal water/riverbeds (e.g. Occoquan River on I-95 at Z < 2m).
-            # Restore elevated bridge deck by interpolating between entrance and exit approach piers.
-            water_mask = np.isfinite(sub_z) & (sub_z < 2.0)
-            if np.any(water_mask):
-                valid = np.where(~water_mask & np.isfinite(sub_z))[0]
-                if len(valid) >= 2:
-                    sub_z[water_mask] = np.interp(
-                        sub_chainage[water_mask], sub_chainage[valid], sub_z[valid]
+            # Bare-earth DEMs remove bridge decks and sample the ground/water beneath.
+            # On OSM bridge stations without a LiDAR deck return, interpolate the deck
+            # linearly between measured anchors on BOTH sides and flag it. Bridge stations
+            # without an anchor on each side (e.g. a bridge at a carriageway end) are never
+            # extrapolated: they keep the bare-earth value, labelled as such.
+            on_bridge = is_bridge_deck_arr[idx]
+            has_lidar = sub_src == ELEVATION_SOURCE_LIDAR
+            needs_deck = on_bridge & ~has_lidar
+            anchors = ~on_bridge | has_lidar
+            if np.any(needs_deck):
+                anchor_c = sub_chainage[anchors]
+                if anchor_c.size >= 2:
+                    bracketed = (sub_chainage > anchor_c.min()) & (sub_chainage < anchor_c.max())
+                else:
+                    bracketed = np.zeros(len(idx), dtype=bool)
+                interp_mask = needs_deck & bracketed
+                if np.any(interp_mask):
+                    sub_z[interp_mask] = np.interp(
+                        sub_chainage[interp_mask], anchor_c, sub_z[anchors]
                     )
-                    is_bridge_deck_arr[idx[water_mask]] = True
+                    sub_src[interp_mask] = ELEVATION_SOURCE_INTERPOLATED
+                unresolved = needs_deck & ~bracketed
+                if np.any(unresolved):
+                    sub_src[unresolved] = ELEVATION_SOURCE_UNDER_BRIDGE
+                    logger.warning(
+                        "%s/%s: %d bridge station(s) lack anchors on both sides; kept "
+                        "bare-earth elevation labelled '%s' (deck height unknown)",
+                        corridor_key,
+                        direction_key,
+                        int(unresolved.sum()),
+                        ELEVATION_SOURCE_UNDER_BRIDGE,
+                    )
 
-            # 2. Boundary interchange ditch corrections (stations landing off embankment into ditch)
-            if n > 2 and (sub_z[1] - sub_z[0] > 4.0):
-                sub_z[0] = 2.0 * sub_z[1] - sub_z[2]
-            if n > 2 and (sub_z[-2] - sub_z[-1] > 4.0):
-                sub_z[-1] = 2.0 * sub_z[-2] - sub_z[-3]
+            low_off_bridge = ~on_bridge & (sub_z < 2.0)
+            if np.any(low_off_bridge):
+                logger.warning(
+                    "%s/%s: %d off-bridge station(s) below 2 m NAVD88 (possible untagged "
+                    "water crossing): %s",
+                    corridor_key,
+                    direction_key,
+                    int(low_off_bridge.sum()),
+                    [segment_ids[i] for i in idx[low_off_bridge]],
+                )
 
-            # 3. Intermediate overpass/viaduct underpass trench drops (bare-earth cuts under highway bridges)
-            for _ in range(2):
-                for i in range(1, n - 1):
-                    chord = (sub_z[i - 1] + sub_z[i + 1]) / 2.0
-                    if chord - sub_z[i] > 2.5:
-                        sub_z[i] = chord
+            labels, counts = np.unique(sub_src.astype(str), return_counts=True)
+            logger.info(
+                "%s/%s elevation sources: %s",
+                corridor_key,
+                direction_key,
+                dict(zip(labels.tolist(), counts.tolist(), strict=True)),
+            )
 
             raw_elevations[idx] = sub_z
+            elevation_source[idx] = sub_src
 
             sub_z_smooth, sub_grade, sub_curv = self.smooth_elevation_profile(
-                sub_chainage, sub_z, window_length=5, polyorder=2
+                sub_chainage, sub_z, window_length=sg_window, polyorder=2
             )
+            edge = np.zeros(len(idx), dtype=bool)
+            edge[:half_window] = True
+            edge[len(idx) - half_window :] = True
+            grade_edge_effect_arr[idx] = edge
             sub_grade_raw = self.compute_raw_discrete_differences(sub_chainage, sub_z)
             sub_sag, sub_crest = self.classify_vertical_alignment(sub_chainage, sub_grade, sub_curv)
 
@@ -554,9 +658,7 @@ class ElevationExtractor:
             is_crest_arr[idx] = sub_crest
 
         result_dict: dict[str, Any] = {
-            "segment_id": gdf["segment_id"].to_list()
-            if "segment_id" in gdf.columns
-            else [f"seg_{i:04d}" for i in range(len(gdf))],
+            "segment_id": segment_ids,
             "corridor_id": gdf["corridor_id"].to_list()
             if "corridor_id" in gdf.columns
             else ["unknown"] * len(gdf),
@@ -577,6 +679,8 @@ class ElevationExtractor:
             "is_sag": is_sag_arr,
             "is_crest": is_crest_arr,
             "is_bridge_deck": is_bridge_deck_arr,
+            "elevation_source": elevation_source.astype(str).tolist(),
+            "grade_edge_effect": grade_edge_effect_arr,
         }
 
         return pl.DataFrame(result_dict)
@@ -672,8 +776,9 @@ def process_corridor_stations(
     stations_gdf: gpd.GeoDataFrame,
     dem_path: Path | None = None,
     laz_path: Path | None = None,
+    usgs_epqs_path: Path | None = None,
 ) -> pl.DataFrame:
     """Vectorized pipeline generating the canonical elevation profile mart."""
     return ElevationExtractor().process_corridor_stations(
-        stations_gdf, dem_path=dem_path, laz_path=laz_path
+        stations_gdf, dem_path=dem_path, laz_path=laz_path, usgs_epqs_path=usgs_epqs_path
     )

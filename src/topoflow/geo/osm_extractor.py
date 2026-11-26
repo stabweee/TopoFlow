@@ -11,17 +11,24 @@ import json
 import logging
 import math
 import re
+import statistics
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
 import pyproj
 import requests
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 
 from topoflow.config import CorridorConfig, CorridorsConfig, Settings, get_settings
-from topoflow.constants import CRS_METRIC, CRS_WGS84
+from topoflow.constants import (
+    CONTINUITY_TOLERANCE_METERS,
+    CRS_METRIC,
+    CRS_WGS84,
+    MAX_STITCH_GAP_METERS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,25 +289,48 @@ def _is_deflection_acceptable(
     return cos_theta >= min_cos
 
 
+def _metric_transformer() -> pyproj.Transformer:
+    """Return a WGS84 -> UTM 18N (EPSG:26918) transformer for metric gap/deflection checks."""
+    return pyproj.Transformer.from_crs(CRS_WGS84, CRS_METRIC, always_xy=True)
+
+
+def _project_coords(
+    coords: list[tuple[float, float]], transformer: pyproj.Transformer
+) -> list[tuple[float, float]]:
+    """Project a list of (lon, lat) coordinates into metric (easting, northing)."""
+    xs, ys = transformer.transform([c[0] for c in coords], [c[1] for c in coords])
+    return list(zip(xs, ys, strict=True))
+
+
 def _stitch_segments_to_linestring(
     segments: list[list[tuple[float, float]]],
     target_direction: str,
-    max_gap_degrees: float = 0.0005,
+    max_gap_m: float = MAX_STITCH_GAP_METERS,
 ) -> LineString:
-    """Stitch an unordered collection of coordinate chains into a single continuous LineString.
+    """Stitch coordinate chains into a continuous LineString (see ``stitch_segments_with_gap``)."""
+    line, _ = stitch_segments_with_gap(segments, target_direction, max_gap_m=max_gap_m)
+    return line
 
-    Handles way reversal and chain connection. Validates that resulting LineString has
-    zero breaks and is oriented along the intended direction of travel. Rejects gaps > 50m
-    to prevent cross-median jumps (15-40m wide), interchange ramp leaps, or masking missing bridge spans.
-    Enforces a forward deflection angle constraint (<= 90 deg) preventing median U-turns.
+
+def stitch_segments_with_gap(
+    segments: list[list[tuple[float, float]]],
+    target_direction: str,
+    max_gap_m: float = MAX_STITCH_GAP_METERS,
+) -> tuple[LineString, float]:
+    """Stitch unordered coordinate chains into one continuous LineString and report the gap.
+
+    Output coordinates are the original WGS84 vertices (unchanged). All distance and
+    deflection tests are evaluated on UTM Zone 18N (EPSG:26918) projections in meters.
+    Junctions wider than ``max_gap_m`` (cross-median jumps, ramp leaps, missing bridge
+    spans) are rejected, as are forward deflections > 90 deg (median U-turns).
 
     Args:
         segments: List of coordinate lists [(lon, lat), ...].
-        target_direction: Desired direction ('inner_loop', 'outer_loop', 'northbound', 'southbound').
-        max_gap_degrees: Maximum allowable distance gap between connecting segment endpoints (~50m).
+        target_direction: 'inner_loop', 'outer_loop', 'northbound' or 'southbound'.
+        max_gap_m: Maximum allowable junction gap between connecting endpoints (meters).
 
     Returns:
-        Continuous Shapely LineString.
+        Tuple of (continuous LineString, largest junction gap actually bridged in meters).
 
     Raises:
         OSMTopologicalError: If segments cannot be chained or result in zero-length geometry.
@@ -314,28 +344,30 @@ def _stitch_segments_to_linestring(
         raise OSMTopologicalError("One or more coordinate segments contain fewer than 2 points.")
 
     if len(segments) == 1:
-        coords = segments[0]
-        line = LineString(coords)
-        return _ensure_directional_bearing(line, target_direction)
+        line = LineString(segments[0])
+        return _ensure_directional_bearing(line, target_direction), 0.0
 
-    # Greedily connect segments matching endpoints
-    remaining = [list(seg) for seg in segments]
-    stitched: list[tuple[float, float]] = remaining.pop(0)
+    # Greedily connect segments matching endpoints. Each chain is carried as parallel
+    # (WGS84 output, UTM metric) coordinate lists so distances are true meters.
+    transformer = _metric_transformer()
+    remaining = [(list(seg), _project_coords(list(seg), transformer)) for seg in segments]
+    stitched, stitched_m = remaining.pop(0)
 
-    max_gap_sq = max_gap_degrees**2
+    max_gap_sq = max_gap_m**2
+    largest_gap_sq = 0.0
 
     while remaining:
-        head = stitched[0]
-        tail = stitched[-1]
+        head = stitched_m[0]
+        tail = stitched_m[-1]
 
-        v_tail_in = (tail[0] - stitched[-2][0], tail[1] - stitched[-2][1])
-        v_head_out = (stitched[1][0] - head[0], stitched[1][1] - head[1])
+        v_tail_in = (tail[0] - stitched_m[-2][0], tail[1] - stitched_m[-2][1])
+        v_head_out = (stitched_m[1][0] - head[0], stitched_m[1][1] - head[1])
 
         best_match_idx = -1
         best_mode: str | None = None
         min_dist = float("inf")
 
-        for idx, candidate in enumerate(remaining):
+        for idx, (_, candidate) in enumerate(remaining):
             cand_head = candidate[0]
             cand_tail = candidate[-1]
 
@@ -392,19 +424,25 @@ def _stitch_segments_to_linestring(
 
         if min_dist > max_gap_sq:
             raise OSMTopologicalError(
-                f"Topological gap ({min_dist**0.5:.5f} deg) exceeds maximum tolerance "
-                f"({max_gap_degrees} deg) in direction '{target_direction}'"
+                f"Topological gap ({min_dist**0.5:.1f} m) exceeds maximum tolerance "
+                f"({max_gap_m:.1f} m) in direction '{target_direction}'"
             )
+        largest_gap_sq = max(largest_gap_sq, min_dist)
 
-        next_seg = remaining.pop(best_match_idx)
-        if best_mode == "append_normal":
-            stitched.extend(next_seg[1:])
-        elif best_mode == "append_reverse":
-            stitched.extend(list(reversed(next_seg))[1:])
-        elif best_mode == "prepend_normal":
-            stitched = next_seg[:-1] + stitched
-        elif best_mode == "prepend_reverse":
-            stitched = list(reversed(next_seg))[:-1] + stitched
+        next_seg, next_m = remaining.pop(best_match_idx)
+        if best_mode in ("append_reverse", "prepend_reverse"):
+            next_seg, next_m = list(reversed(next_seg)), list(reversed(next_m))
+
+        # Drop the junction vertex only when both chains share it exactly; across a
+        # (bridged) gap both endpoints are real OSM vertices and must be kept.
+        if best_mode in ("append_normal", "append_reverse"):
+            skip = 1 if next_seg[0] == stitched[-1] else 0
+            stitched.extend(next_seg[skip:])
+            stitched_m.extend(next_m[skip:])
+        else:
+            keep = len(next_seg) - 1 if next_seg[-1] == stitched[0] else len(next_seg)
+            stitched = next_seg[:keep] + stitched
+            stitched_m = next_m[:keep] + stitched_m
 
     # Remove consecutive duplicate vertices
     cleaned: list[tuple[float, float]] = []
@@ -416,7 +454,70 @@ def _stitch_segments_to_linestring(
         raise OSMTopologicalError("Stitched road line collapsed into fewer than 2 distinct points.")
 
     line = LineString(cleaned)
-    return _ensure_directional_bearing(line, target_direction)
+    return _ensure_directional_bearing(line, target_direction), float(largest_gap_sq**0.5)
+
+
+def _parse_lanes(value: Any) -> int | None:
+    """Parse an OSM ``lanes`` tag into an int, or None when absent/non-numeric."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _is_bridge_tag(tags: dict[str, Any]) -> bool:
+    """True when an OSM way carries a bridge structure tag (``bridge`` present and not 'no')."""
+    value = tags.get("bridge")
+    return value is not None and str(value).strip().lower() not in ("", "no")
+
+
+def compute_way_intervals(
+    line: LineString,
+    ways: list[dict[str, Any]],
+    nodes: dict[int, tuple[float, float]],
+) -> list[dict[str, Any]]:
+    """Locate each OSM way along a stitched carriageway as a chainage interval in meters.
+
+    Chainage is measured in UTM Zone 18N (EPSG:26918) from the first vertex of ``line``,
+    matching the chainage used by ``topoflow.geo.discretization``. Way digitization
+    direction is irrelevant: the interval is [min, max] of its projected vertex chainages.
+
+    Args:
+        line: Stitched WGS84 carriageway LineString.
+        ways: OSM way dictionaries that were stitched into ``line``.
+        nodes: Node map {node_id: (lon, lat)}.
+
+    Returns:
+        Intervals sorted by start, each a dict with keys ``start_m``, ``end_m``,
+        ``bridge`` (bool), ``lanes`` (int | None), ``maxspeed`` (str | None), ``way_id``.
+    """
+    transformer = _metric_transformer()
+    line_m = LineString(_project_coords(list(line.coords), transformer))
+    intervals: list[dict[str, Any]] = []
+
+    for way in ways:
+        coords = [nodes[nid] for nid in way.get("nodes", []) if nid in nodes]
+        if len(coords) < 2:
+            continue
+        positions = [line_m.project(Point(xy)) for xy in _project_coords(coords, transformer)]
+        start_m, end_m = float(min(positions)), float(max(positions))
+        if end_m - start_m <= 0.0:
+            continue
+        tags = way.get("tags", {})
+        maxspeed = tags.get("maxspeed")
+        intervals.append(
+            {
+                "start_m": round(start_m, 2),
+                "end_m": round(end_m, 2),
+                "bridge": _is_bridge_tag(tags),
+                "lanes": _parse_lanes(tags.get("lanes")),
+                "maxspeed": str(maxspeed) if maxspeed else None,
+                "way_id": way.get("id"),
+            }
+        )
+
+    intervals.sort(key=lambda iv: (iv["start_m"], iv["end_m"]))
+    return intervals
 
 
 def _ensure_directional_bearing(line: LineString, direction: str) -> LineString:
@@ -528,29 +629,24 @@ class OSMExtractor:
                 continue
 
             segments: list[list[tuple[float, float]]] = []
-            has_bridge = False
-            total_lanes = []
-            speed_limits = []
-
+            stitched_ways: list[dict[str, Any]] = []
             for way in dir_ways:
-                tags = way.get("tags", {})
-                if tags.get("bridge") in ("yes", "viaduct"):
-                    has_bridge = True
-                lane_val = tags.get("lanes")
-                if lane_val and lane_val.isdigit():
-                    total_lanes.append(int(lane_val))
-                maxspeed_val = tags.get("maxspeed")
-                if maxspeed_val:
-                    speed_limits.append(str(maxspeed_val))
-
                 coords = [nodes[nid] for nid in way.get("nodes", []) if nid in nodes]
                 if len(coords) >= 2:
                     segments.append(coords)
+                    stitched_ways.append(way)
 
-            stitched_line = _stitch_segments_to_linestring(segments, direction)
+            stitched_line, max_gap_m = stitch_segments_with_gap(segments, direction)
             metric_len = calculate_metric_length(stitched_line)
-            dominant_lanes = round(sum(total_lanes) / len(total_lanes)) if total_lanes else 4
-            dominant_speed = speed_limits[0] if speed_limits else "55 mph"
+            way_intervals = compute_way_intervals(stitched_line, stitched_ways, nodes)
+
+            # Carriageway summaries are reported only when OSM actually tags them;
+            # no default lane counts or speed limits are invented.
+            tagged_lanes = [iv["lanes"] for iv in way_intervals if iv["lanes"] is not None]
+            tagged_speeds = [iv["maxspeed"] for iv in way_intervals if iv["maxspeed"]]
+            # median_low always returns an actually-tagged lane count (no rounding artefacts)
+            dominant_lanes = int(statistics.median_low(tagged_lanes)) if tagged_lanes else None
+            dominant_speed = Counter(tagged_speeds).most_common(1)[0][0] if tagged_speeds else None
 
             rows.append(
                 {
@@ -560,9 +656,13 @@ class OSMExtractor:
                     "name": corridor.name,
                     "lanes": dominant_lanes,
                     "maxspeed": dominant_speed,
-                    "has_bridge": has_bridge,
+                    "has_bridge": any(iv["bridge"] for iv in way_intervals),
                     "length_meters": round(metric_len, 2),
-                    "is_continuous": True,
+                    "max_junction_gap_m": round(max_gap_m, 2),
+                    # True only when every junction shares (or nearly shares) an OSM vertex;
+                    # gaps up to MAX_STITCH_GAP_METERS are bridged but reported as discontinuous.
+                    "is_continuous": bool(max_gap_m <= CONTINUITY_TOLERANCE_METERS),
+                    "way_intervals": json.dumps(way_intervals),
                     "geometry": stitched_line,
                 }
             )

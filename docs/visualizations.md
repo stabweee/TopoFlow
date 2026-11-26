@@ -44,8 +44,8 @@ outputs/figures/
 * **Technical Intent**: Publication-grade comparative plan-view visualization of the roadway geometries projected into metric UTM Zone 18N (`EPSG:26918`).
 * **Visual Composition**:
   - **Panel 1 (I-495 American Legion Bridge)**: Displays the primary study corridor spanning McLean, VA to Cabin John, MD, highlighting the Potomac River bridge span.
-  - **Panel 2 (I-95 Lorton-Woodbridge)**: Flat control corridor along the Occoquan River basin.
-  - **Panel 3 (I-295 Anacostia Freeway)**: Flat control corridor along the urban Anacostia River waterfront.
+  - **Panel 2 (I-95 Lorton-Woodbridge)**: Control corridor crossing the Occoquan River.
+  - **Panel 3 (I-295 Anacostia Freeway)**: Control corridor along the Anacostia River waterfront.
 * **Empirical Takeaway**: Validates metric spatial projection and confirms directional carriageway separation across all three corridors.
 
 ---
@@ -68,17 +68,11 @@ outputs/figures/
 * **Generating Module**: [`src/topoflow/visualization/elevation_plot.py`](file:///c:/Users/hsu_s/Projects/Personal/TopoFlow/src/topoflow/visualization/elevation_plot.py)
 * **Technical Intent**: Present the definitive vertical elevation profile ($Z$) and analytical slope ($\text{Grade} = 100 \cdot dz/dx$) for the American Legion Bridge sag curve, juxtaposed against control corridors.
 * **Visual Composition**:
-  - **Panel 1 (ALMB Absolute Elevation Profile)**: Bare-Earth DEM vs. Savitzky-Golay smoothed elevation with ASPRS Class 17 LiDAR bridge deck laser returns overlaid across the 450m Potomac gorge span (~35.75m–46.14m NAVD88).
-  - **Panel 2 (ALMB Longitudinal Vertical Grade %)**: First derivative grade profile with staggered geographic landmark annotations:
-    - *Tysons Corner Plateau* (~120m NAVD88)
-    - *McLean Crest Summit* (~105m NAVD88)
-    - *Exit 44 Georgetown Pike*
-    - *Scott's Run Bluffs descent* ($-3.2\%$ grade)
-    - *Potomac River Gorge Sag Inflection* (~35m NAVD88)
-    - *Clara Barton Parkway climb* ($+3.8\%$ grade)
-    - *River Road (MD-190) Summit* (~95m NAVD88)
-  - **Panels 3 & 4 (Control Corridor Profiles - I-95 & I-295)**: Elevation and grade profiles of control corridors confirming authentic rolling Piedmont topography ($\le \pm 2.5\%$) with unclipped dynamic scaling, free from bare-earth river trench artifacts.
-* **Empirical Takeaway**: Conclusively demonstrates the $-3.2\%$ downhill gravity descent into the Potomac gorge followed immediately by the $+3.8\%$ uphill climb, establishing the physical bedrock for sag bottleneck deceleration.
+  - **Panel 1 (ALMB Absolute Elevation Profile)**: Savitzky-Golay smoothed elevation with stations coloured by `elevation_source` (USGS EPQS bare-earth, LiDAR Class 17 deck, interpolated bridge). The longest OSM bridge run is shaded; the steepest descent, sag low point and steepest climb are annotated from the data (edge stations excluded).
+  - **Panel 2 (ALMB Longitudinal Vertical Grade %)**: First-derivative grade profile with the observed maximum descent (−3.26%) and climb (+3.49%) as reference lines.
+  - **Panel 3 (Vertical Curvature)**: Second derivative with sag-classified stations.
+  - **Panels 4 & 5 (Control Corridor Grades - I-95 & I-295)**: Rolling terrain with grades up to about ±3–3.7%; the controls are not flat.
+* **Empirical Takeaway**: A sustained −3.3% descent into the Potomac gorge, a measured deck low point near 36 m, and a +3.5% climb on the Maryland side. Comparable peak grades also occur on the control corridors, so the ALB's distinguishing feature is the long descent–sag–climb sequence, not grade magnitude alone.
 
 ---
 
@@ -89,8 +83,8 @@ outputs/figures/
 * **Visual Composition**:
   - **Top-Left (Raw vs Smoothed Grade Overlay)**: Direct comparison showing raw two-point finite difference noise spikes vs the smooth analytical derivative.
   - **Top-Right (Residual Distribution)**: Histogram and KDE of elevation residuals $(\Delta z = z_{\text{raw}} - z_{\text{savgol}})$ showing zero-centered Gaussian distribution ($\mu \approx 0.00\text{m}, \sigma < 0.15\text{m}$).
-  - **Bottom-Left (Jerk Energy & Roughness Reduction)**: Second derivative $(d^2z/dx^2)$ plot demonstrating a $6.75\times$ attenuation in unphysical vertical jerk energy (from $8.64 \times 10^{-9}$ down to $1.28 \times 10^{-9}\text{ m}^{-2}$).
-  - **Bottom-Right (Cumulative Total Variation Metric)**: Total Variation curve proving a $30.6\%$ reduction in cumulative gradient oscillation (from $37.53\%$ raw down to $26.04\%$ filtered).
+  - **Bottom-Left (Jerk Energy & Roughness Reduction)**: Second derivative $(d^2z/dx^2)$ plot demonstrating a $7.1\times$ attenuation in vertical jerk energy (from $7.74 \times 10^{-9}$ down to $1.09 \times 10^{-9}\text{ m}^{-2}$).
+  - **Bottom-Right (Cumulative Total Variation Metric)**: Total Variation showing a $29.4\%$ reduction in cumulative gradient oscillation (from $36.31\%$ raw down to $25.62\%$ filtered). Panel D is a labelled synthetic benchmark, not measured data.
 * **Empirical Takeaway**: Justifies Decision 1.5, proving the Savitzky-Golay filter preserves macro physical highway curvature while suppressing micro-scale LiDAR and DEM raster discretization noise.
 
 ---

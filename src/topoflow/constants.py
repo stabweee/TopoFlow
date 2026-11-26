@@ -24,6 +24,13 @@ CRS_METRIC: str = "EPSG:26918"
 # Discretization interval for highway centerline chainage (meters).
 SPATIAL_RESOLUTION_METERS: float = 100.0
 
+# Maximum junction gap tolerated when stitching OSM ways into one carriageway (meters,
+# measured in EPSG:26918). Wider gaps indicate cross-median jumps or missing spans.
+MAX_STITCH_GAP_METERS: float = 50.0
+
+# Junctions closer than this are treated as sharing a vertex (carriageway "continuous").
+CONTINUITY_TOLERANCE_METERS: float = 1.0
+
 # Curvature threshold cap for straight highway tangents (meters).
 MAX_STRAIGHT_RADIUS_METERS: float = 10000.0
 
@@ -47,8 +54,8 @@ GRADE_FLAT_LOWER_THRESHOLD: float = -0.5
 # Maximum theoretical jam density cap (vehicles per mile per lane).
 JAM_DENSITY_VPMPL: float = 220.0
 
-# Default highway free-flow speed baseline (miles per hour).
-DEFAULT_FREE_FLOW_SPEED_MPH: float = 65.0
+# Free-flow speed is estimated empirically per segment in TF-023 (85th percentile,
+# off-peak dry conditions). No default free-flow speed is defined on purpose.
 
 
 # =============================================================================
