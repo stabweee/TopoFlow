@@ -8,12 +8,14 @@ and exports the canonical station matrix.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import numpy as np
 import pyproj
 from shapely.geometry import LineString, Point
 from shapely.ops import transform
@@ -143,6 +145,59 @@ def generate_segment_id(
     return f"{corridor_id}_{direction}_s{station_index:04d}"
 
 
+def assign_station_way_attributes(
+    chainages_m: np.ndarray,
+    way_intervals: list[dict[str, Any]],
+) -> dict[str, list[Any]]:
+    """Map OSM per-way attributes onto stations by chainage.
+
+    A station inherits the attributes of the OSM way whose chainage interval
+    ``[start_m, end_m]`` contains it. ``has_bridge`` is True only when the station
+    point itself lies on a bridge-tagged way. Stations covered by no interval get
+    ``has_bridge=False`` and null ``lanes`` / ``maxspeed`` (nothing is invented).
+
+    Args:
+        chainages_m: 1D array of station chainages (meters, EPSG:26918).
+        way_intervals: Intervals from ``topoflow.geo.osm_extractor.compute_way_intervals``.
+
+    Returns:
+        Dict with ``has_bridge``, ``lanes`` and ``maxspeed`` lists aligned to ``chainages_m``.
+    """
+    c = np.asarray(chainages_m, dtype=np.float64)
+    n = len(c)
+    if not way_intervals or n == 0:
+        return {"has_bridge": [False] * n, "lanes": [None] * n, "maxspeed": [None] * n}
+
+    starts = np.array([float(iv["start_m"]) for iv in way_intervals])
+    ends = np.array([float(iv["end_m"]) for iv in way_intervals])
+    bridge = np.array([bool(iv.get("bridge", False)) for iv in way_intervals])
+
+    inside = (c[:, None] >= starts[None, :]) & (c[:, None] <= ends[None, :])
+    has_bridge = (inside & bridge[None, :]).any(axis=1)
+
+    def _first_tagged(key: str) -> list[Any]:
+        tagged = np.array([iv.get(key) is not None for iv in way_intervals])
+        hits = inside & tagged[None, :]
+        first = np.argmax(hits, axis=1)
+        found = hits.any(axis=1)
+        return [way_intervals[j][key] if ok else None for j, ok in zip(first, found, strict=True)]
+
+    return {
+        "has_bridge": has_bridge.tolist(),
+        "lanes": _first_tagged("lanes"),
+        "maxspeed": _first_tagged("maxspeed"),
+    }
+
+
+def _parse_way_intervals(value: Any) -> list[dict[str, Any]] | None:
+    """Decode a ``way_intervals`` cell (JSON string or list); None when absent."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    if isinstance(value, str):
+        return list(json.loads(value)) if value.strip() else None
+    return list(value)
+
+
 def resample_carriageway_stations(
     line_metric: LineString,
     corridor_id: str,
@@ -150,6 +205,7 @@ def resample_carriageway_stations(
     interval_m: float = SPATIAL_RESOLUTION_METERS,
     max_radius: float = MAX_STRAIGHT_RADIUS_METERS,
     extra_metadata: dict[str, Any] | None = None,
+    way_intervals: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Resample a single metric highway LineString into equidistant chainage stations.
 
@@ -160,6 +216,8 @@ def resample_carriageway_stations(
         interval_m: Equidistant chainage distance step (defaults to 100.0m).
         max_radius: Tangent cap threshold for radius of curvature (defaults to 10,000m).
         extra_metadata: Optional corridor metadata (e.g., route, lanes, maxspeed) to propagate.
+        way_intervals: Optional OSM per-way chainage intervals. When given, ``has_bridge``,
+            ``lanes`` and ``maxspeed`` are assigned per station instead of per carriageway.
 
     Returns:
         List of station dictionaries with complete spatial and differential geometry attributes.
@@ -201,6 +259,11 @@ def resample_carriageway_stations(
     # Compute differential geometry (heading and Menger curvature)
     stations: list[dict[str, Any]] = []
     meta = extra_metadata or {}
+    per_station = (
+        assign_station_way_attributes(np.asarray(chainages), way_intervals)
+        if way_intervals is not None
+        else None
+    )
 
     for i in range(n_points):
         p_curr = coords_metric[i]
@@ -250,7 +313,11 @@ def resample_carriageway_stations(
             "geometry": Point(lons[i], lats[i]),
         }
 
-        # Propagate metadata if available
+        if per_station is not None:
+            for key, values in per_station.items():
+                station_record[key] = values[i]
+
+        # Propagate remaining carriageway metadata (per-station keys take precedence)
         for key, val in meta.items():
             if key not in station_record and key != "geometry":
                 station_record[key] = val
@@ -325,12 +392,34 @@ class SpatialDiscretizer:
                 target_crs=self.metric_crs,
             )
 
-            # Metadata extraction
+            # Metadata extraction (carriageway-level bookkeeping columns are not propagated)
             metadata = {
                 k: v
                 for k, v in row.items()
-                if k not in ("geometry", "length_meters", "is_continuous")
+                if k
+                not in (
+                    "geometry",
+                    "length_meters",
+                    "is_continuous",
+                    "max_junction_gap_m",
+                    "way_intervals",
+                )
             }
+
+            way_intervals = _parse_way_intervals(row.get("way_intervals"))
+            if way_intervals is None:
+                # Legacy corridor files only carry carriageway-level attributes. Copying a
+                # carriageway "has a bridge somewhere" flag onto every station would mark the
+                # whole road as bridge deck, so per-station attributes are left unknown.
+                logger.warning(
+                    "%s %s: no per-way intervals; has_bridge/lanes/maxspeed set to null "
+                    "(re-run OSM extraction to obtain per-station attributes)",
+                    row.get("corridor_id"),
+                    row.get("direction"),
+                )
+                for key in ("has_bridge", "lanes", "maxspeed"):
+                    if key in metadata:
+                        metadata[key] = None
 
             stations = resample_carriageway_stations(
                 line_metric=line_metric,
@@ -339,6 +428,7 @@ class SpatialDiscretizer:
                 interval_m=self.interval_m,
                 max_radius=self.max_radius,
                 extra_metadata=metadata,
+                way_intervals=way_intervals,
             )
             all_stations.extend(stations)
 

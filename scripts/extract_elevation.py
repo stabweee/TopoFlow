@@ -41,30 +41,38 @@ def main() -> None:
 
     extractor = ElevationExtractor(settings)
 
-    # Ingest authentic USGS 3DEP datasets with offline fixture fallbacks
-    dem_path = Path("tests/fixtures/mock_dem.tif")
+    # Authentic USGS 3DEP inputs only: production never falls back to test fixtures.
     laz_path = settings.raw_data_dir / "elevation" / "alb_i495_bridge_lidar.laz"
-    if not laz_path.exists():
-        laz_path = Path("tests/fixtures/mock_alb_laz.laz")
-
     usgs_epqs_path = settings.raw_data_dir / "elevation" / "usgs_epqs_bare_earth.parquet"
-    as_built_csv_path = Path("configs/bridge_profile.csv")
+    for required in (laz_path, usgs_epqs_path):
+        if not required.exists():
+            raise FileNotFoundError(f"Required raw elevation input missing: {required}")
+
+    # Independent, cited reference profile (e.g. as-built plan sheets). Optional.
+    as_built_csv_path = settings.configs_dir / "bridge_asbuilt_reference.csv"
 
     logger.info("Processing corridor stations through hybrid elevation extraction...")
     df_elevation = extractor.process_corridor_stations(
         stations_gdf=stations_gdf,
-        dem_path=dem_path,
+        dem_path=None,
         laz_path=laz_path,
-        usgs_epqs_path=usgs_epqs_path if usgs_epqs_path.exists() else None,
+        usgs_epqs_path=usgs_epqs_path,
     )
 
-    # Validate bridge deck elevations for ALB against As-Built plans (Inner Loop crossing)
+    # Validate measured ALB inner-loop deck elevations against an independent reference
     alb_bridge = df_elevation.filter(
         (pl.col("corridor_id") == "alb_i495")
         & (pl.col("direction") == "inner_loop")
-        & (pl.col("is_bridge_deck"))
+        & pl.col("is_bridge_deck")
+        & (pl.col("elevation_source") == "lidar_c17")
     ).sort("chainage_m")
-    if len(alb_bridge) > 0 and as_built_csv_path.exists():
+    if not as_built_csv_path.exists():
+        logger.warning(
+            "No independent bridge reference at %s; deck elevations are NOT externally "
+            "validated (LiDAR Class 17 measurements only).",
+            as_built_csv_path,
+        )
+    elif len(alb_bridge) > 0:
         bridge_z = alb_bridge["elevation_raw_m"].to_numpy()
         bridge_chainage = alb_bridge["chainage_m"].to_numpy()
         logger.info(

@@ -23,6 +23,38 @@ from topoflow.config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 
+# (elevation_source, color, marker size, legend label)
+_SOURCE_STYLES: tuple[tuple[str, str, int, str], ...] = (
+    ("usgs_epqs", "#2ca02c", 18, "USGS 3DEP bare-earth (EPQS)"),
+    ("usgs_dem", "#17becf", 18, "USGS 3DEP bare-earth (DEM)"),
+    ("lidar_c17", "#d62728", 35, "LiDAR Class 17 bridge deck"),
+    ("interpolated", "#ff7f0e", 35, "Interpolated (bridge, no LiDAR)"),
+    ("bare_earth_under_bridge", "#7f7f7f", 35, "Bare earth under bridge (deck unknown)"),
+    ("unknown", "#bcbd22", 18, "Unknown source"),
+)
+
+
+def _longest_true_run(mask: np.ndarray) -> tuple[int, int] | None:
+    """Return (first, last) indices of the longest contiguous True run, or None."""
+    best: tuple[int, int] | None = None
+    start: int | None = None
+    for i, flag in enumerate(np.append(np.asarray(mask, dtype=bool), False)):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            if best is None or (i - 1 - start) > (best[1] - best[0]):
+                best = (start, i - 1)
+            start = None
+    return best
+
+
+def _edge_mask(df: pl.DataFrame) -> np.ndarray:
+    """Stations flagged as Savitzky-Golay edge-effect (all False when column absent)."""
+    if "grade_edge_effect" in df.columns:
+        return df["grade_edge_effect"].to_numpy().astype(bool)
+    return np.zeros(len(df), dtype=bool)
+
+
 def plot_corridor_elevation_profile(
     df_elevation: pl.DataFrame,
     output_path: Path | None = None,
@@ -72,7 +104,12 @@ def plot_corridor_elevation_profile(
         km = df_alb_inner["chainage_m"].to_numpy() / 1000.0
         z_smooth = df_alb_inner["elevation_smooth_m"].to_numpy()
         z_raw = df_alb_inner["elevation_raw_m"].to_numpy()
-        is_bridge = df_alb_inner["is_bridge_deck"].to_numpy()
+        is_bridge = df_alb_inner["is_bridge_deck"].to_numpy().astype(bool)
+        sources = (
+            np.asarray(df_alb_inner["elevation_source"].to_list(), dtype=object)
+            if "elevation_source" in df_alb_inner.columns
+            else np.full(len(df_alb_inner), "unknown", dtype=object)
+        )
 
         ax_elev.plot(
             km,
@@ -81,57 +118,48 @@ def plot_corridor_elevation_profile(
             lw=2.5,
             label="Roadway Centerline (Savitzky-Golay)",
         )
-        ax_elev.scatter(
-            km[~is_bridge],
-            z_raw[~is_bridge],
-            color="#2ca02c",
-            s=18,
-            alpha=0.6,
-            label="Bare-Earth DEM Stations (Land Cuts)",
-        )
-        ax_elev.scatter(
-            km[is_bridge],
-            z_raw[is_bridge],
-            color="#d62728",
-            s=35,
-            zorder=5,
-            label="ASPRS Class 17 LiDAR (Bridge Deck)",
-        )
+        for src, color, size, label in _SOURCE_STYLES:
+            mask = sources == src
+            if np.any(mask):
+                ax_elev.scatter(
+                    km[mask],
+                    z_raw[mask],
+                    color=color,
+                    s=size,
+                    zorder=5,
+                    label=f"{label} (n={int(mask.sum())})",
+                )
 
-        # Highlight 450m American Legion Bridge Span (Chainage 3.70 km to 4.15 km)
-        ax_elev.axvspan(
-            3.70,
-            4.15,
-            color="#fee08b",
-            alpha=0.40,
-            label="American Legion Bridge (450m Span, Sag @ ~35.8m)",
-        )
-        bridge_bed_km = np.linspace(3.70, 4.15, 20)
-        river_bed_z = np.full_like(bridge_bed_km, 6.2)
-        ax_elev.plot(
-            bridge_bed_km,
-            river_bed_z,
-            color="#8c564b",
-            ls="--",
-            lw=1.8,
-            label="Potomac River Gorge Bed (~6m Water Level)",
-        )
+        # Main bridge span = longest contiguous run of OSM bridge-tagged stations
+        span = _longest_true_run(is_bridge)
+        if span is not None:
+            i0, i1 = span
+            span_len_m = (km[i1] - km[i0]) * 1000.0
+            ax_elev.axvspan(
+                km[i0],
+                km[i1],
+                color="#fee08b",
+                alpha=0.40,
+                label=f"Longest OSM bridge run (stations {i0}-{i1}, {span_len_m:.0f} m)",
+            )
 
-        # Geographic Landmark Annotations with staggered heights to eliminate label collisions
-        landmarks = [
-            (0.0, 106.0, "Tysons\n(77m)"),
-            (1.4, 108.0, "McLean Crest\n(94m Summit)"),
-            (1.8, 96.0, "Exit 44\n(Georgetown Pk)"),
-            (2.4, 106.0, "Scott's Run\n(-3.2% Drop)"),
-            (3.9, 106.0, "ALB Sag\n(35.8m)"),
-            (4.4, 96.0, "Clara Barton\n(+3.8% Climb)"),
-            (6.4, 106.0, "River Rd\n(MD-190)"),
+        # Data-derived annotations (no hard-coded landmark values)
+        valid = ~_edge_mask(df_alb_inner)
+        grade = df_alb_inner["grade_pct"].to_numpy()
+        i_low = int(np.argmin(np.where(valid, z_smooth, np.inf)))
+        i_desc = int(np.argmin(np.where(valid, grade, np.inf)))
+        i_climb = int(np.argmax(np.where(valid, grade, -np.inf)))
+        y_top = float(np.nanmax(z_raw)) + 6.0
+        annotations = [
+            (km[i_desc], f"Steepest descent\n{grade[i_desc]:+.2f}%"),
+            (km[i_low], f"Sag low point\n{z_smooth[i_low]:.1f} m"),
+            (km[i_climb], f"Steepest climb\n{grade[i_climb]:+.2f}%"),
         ]
-        for x_pos, y_pos, label_text in landmarks:
+        for k, (x_pos, label_text) in enumerate(annotations):
             ax_elev.axvline(x_pos, color="#888888", ls=":", lw=0.9, alpha=0.7)
             ax_elev.text(
                 x_pos,
-                y_pos,
+                y_top + (11.0 if k % 2 else 0.0),  # stagger to avoid label overlap
                 label_text,
                 ha="center",
                 va="bottom",
@@ -145,17 +173,18 @@ def plot_corridor_elevation_profile(
                     alpha=0.9,
                 ),
             )
-        ax_elev.set_ylim(0, 122)
+        ax_elev.set_ylim(max(0.0, float(np.nanmin(z_raw)) - 10.0), y_top + 26.0)
 
         ax_elev.set_title(
-            "I-495 American Legion Bridge: Hybrid Elevation Profile (Virginia Descent to Maryland Ascent)",
+            "I-495 American Legion Bridge Inner Loop: Measured Elevation Profile "
+            "(USGS 3DEP EPQS + LiDAR Class 17)",
             fontsize=13,
             fontweight="bold",
         )
         ax_elev.set_xlabel("Chainage Distance (km)", fontsize=11)
         ax_elev.set_ylabel("Elevation NAVD88 (m)", fontsize=11)
         ax_elev.grid(True, linestyle=":", alpha=0.6)
-        ax_elev.legend(loc="lower left", frameon=True, fontsize=9)
+        ax_elev.legend(loc="lower left", frameon=True, fontsize=8)
 
     # 2. Vertical Grade Profile (Grade %)
     ax_grade = fig.add_subplot(gs[1, 0])
@@ -163,8 +192,15 @@ def plot_corridor_elevation_profile(
         grade = df_alb_inner["grade_pct"].to_numpy()
         ax_grade.plot(km, grade, color="#ff7f0e", lw=2.2, label="Savitzky-Golay Grade (%)")
         ax_grade.axhline(0.0, color="black", lw=0.8, ls="--")
-        ax_grade.axhline(-3.2, color="#d62728", lw=1.0, ls=":", label="Nominal VA Descent (-3.2%)")
-        ax_grade.axhline(+3.8, color="#2ca02c", lw=1.0, ls=":", label="Nominal MD Ascent (+3.8%)")
+        valid_g = ~_edge_mask(df_alb_inner)
+        g_min = float(np.min(grade[valid_g])) if np.any(valid_g) else float(np.min(grade))
+        g_max = float(np.max(grade[valid_g])) if np.any(valid_g) else float(np.max(grade))
+        ax_grade.axhline(
+            g_min, color="#d62728", lw=1.0, ls=":", label=f"Observed max descent ({g_min:+.2f}%)"
+        )
+        ax_grade.axhline(
+            g_max, color="#2ca02c", lw=1.0, ls=":", label=f"Observed max climb ({g_max:+.2f}%)"
+        )
         ax_grade.fill_between(
             km,
             grade,
@@ -217,7 +253,7 @@ def plot_corridor_elevation_profile(
         ax_curv.grid(True, linestyle=":", alpha=0.6)
         ax_curv.legend(loc="upper left", frameon=True, fontsize=8)
 
-    # 4. Control Corridor 1: I-95 Flat Tangents (Lorton / Woodbridge)
+    # 4. Control Corridor 1: I-95 (Lorton / Woodbridge)
     ax_c1 = fig.add_subplot(gs[2, 0])
     df_i95 = df_elevation.filter(
         (pl.col("corridor_id") == "i95_lorton_woodbridge") & (pl.col("direction") == "northbound")
@@ -231,7 +267,7 @@ def plot_corridor_elevation_profile(
         max_g1 = max(3.5, float(np.nanmax(np.abs(grade_i95))) + 0.5)
         ax_c1.set_ylim(-max_g1, max_g1)
         ax_c1.set_title(
-            f"Control 1: I-95 Flat Tangent (Mean: {np.mean(grade_i95):.2f}% ± {np.std(grade_i95):.2f}%)",
+            f"Control 1: I-95 Lorton/Woodbridge NB (Mean: {np.mean(grade_i95):.2f}% ± {np.std(grade_i95):.2f}%)",
             fontsize=11,
             fontweight="bold",
         )
@@ -240,7 +276,7 @@ def plot_corridor_elevation_profile(
         ax_c1.grid(True, linestyle=":", alpha=0.6)
         ax_c1.legend(loc="lower right", frameon=True, fontsize=8)
 
-    # 5. Control Corridor 2: I-295 Flat Tangents (Anacostia Freeway)
+    # 5. Control Corridor 2: I-295 (Anacostia Freeway)
     ax_c2 = fig.add_subplot(gs[2, 1])
     df_i295 = df_elevation.filter(
         (pl.col("corridor_id") == "i295_anacostia") & (pl.col("direction") == "northbound")
@@ -254,7 +290,7 @@ def plot_corridor_elevation_profile(
         max_g2 = max(3.5, float(np.nanmax(np.abs(grade_i295))) + 0.5)
         ax_c2.set_ylim(-max_g2, max_g2)
         ax_c2.set_title(
-            f"Control 2: I-295 Flat Tangent (Mean: {np.mean(grade_i295):.2f}% ± {np.std(grade_i295):.2f}%)",
+            f"Control 2: I-295 Anacostia NB (Mean: {np.mean(grade_i295):.2f}% ± {np.std(grade_i295):.2f}%)",
             fontsize=11,
             fontweight="bold",
         )
@@ -404,7 +440,7 @@ def plot_savgol_vs_raw_differences(
     axs[1, 0].grid(True, linestyle=":", alpha=0.6)
     axs[1, 0].legend(loc="upper right", frameon=True, fontsize=9)
 
-    # Panel D: Performance Summary & Error Distribution Benchmark
+    # Panel D: SYNTHETIC benchmark. Known parabola + noise; illustrates the filter, not measured data
     x_bench = np.linspace(0, 1000, 101)
     g_true = -3.2 + (7.0 / 1000.0) * x_bench
     rng = np.random.default_rng(42)
@@ -439,11 +475,13 @@ def plot_savgol_vs_raw_differences(
     axs[1, 1].axvline(0.0, color="black", lw=1.0, ls="--")
 
     axs[1, 1].set_title(
-        f"Panel D: Benchmark Grade Estimation Error (RMSE Reduction: {rmse_raw / rmse_sg:.2f}×)",
+        f"Panel D: SYNTHETIC Benchmark, not measured data (RMSE ratio {rmse_raw / rmse_sg:.2f}×)",
         fontsize=12,
         fontweight="bold",
     )
-    axs[1, 1].set_xlabel("Grade Estimation Error (Estimated % - Ground Truth %)", fontsize=10)
+    axs[1, 1].set_xlabel(
+        "Error vs synthetic ground truth (%; parabola + σ=5 cm noise)", fontsize=10
+    )
     axs[1, 1].set_ylabel("Probability Density", fontsize=10)
     axs[1, 1].grid(True, linestyle=":", alpha=0.6)
     axs[1, 1].legend(loc="upper right", frameon=True, fontsize=9)

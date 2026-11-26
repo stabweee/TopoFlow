@@ -1,7 +1,7 @@
 # TopoFlow: Spatio-Temporal Topographical Friction & Causal Impact Modeling
 
 <p align="center">
-  <img src="outputs/figures/phase1/elevation_grade_profile.png" alt="TopoFlow American Legion Bridge Elevation Profile" width="850">
+  <img src="outputs/figures/phase1/p1_elevation_grade_profile.png" alt="TopoFlow American Legion Bridge Elevation Profile" width="850">
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@ However, empirical transport physics and LiDAR ground observations demonstrate t
 
 ```
        Virginia Approach              Potomac River Gorge               Maryland Approach
-    [ Downhill Descent -3.2% ]            [ Bridge ]               [ Uphill Climb +3.8% ]
+    [ Downhill Descent -3.3% ]            [ Bridge ]               [ Uphill Climb +3.5% ]
 ════════════════════════════════\                                /════════════════════════════════
                                  \                              /
                                   \____[ Sag Inflection ]______/
@@ -80,8 +80,8 @@ docs/
 │ • OpenStreetMap vector road centerlines (I-495 study corridor; I-95 & I-295 controls)  │
 │ • 100-Meter Equidistant Discretization & Menger Osculating Circle Curvature (κ)         │
 │ • USGS 3DEP 1m EPQS Bare-Earth DEM + ASPRS Class 17 LiDAR Point Cloud Bridge Deck      │
-│ • Water-Crossing Continuity Restoration & Quadratic Savitzky-Golay Polynomial Filter   │
-│ • 33-column Zstandard Parquet Feature Mart (406 stations) + DuckDB Zero-Copy Views    │
+│ • OSM-Tagged Bridge Interpolation (flagged) & Quadratic Savitzky-Golay Filter          │
+│ • 35-column Zstandard Parquet Feature Mart (406 stations) + DuckDB Zero-Copy Views    │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                             │
                                             ▼
@@ -106,7 +106,7 @@ docs/
 │ PHASE 4: ECONOMETRIC TOURNAMENT & CAUSAL MODELING (UPCOMING)                           │
 │ • Two-Way Fixed Effects (TWFE) Panel OLS: Y = β1+(Grade+ × Vol) + β1-(Grade- × Vol)   │
 │ • Driscoll-Kraay Non-Parametric Standard Errors (Spatial & Temporal Autocorrelation)  │
-│ • Synthetic Difference-in-Differences (SDID) using I-95 & I-295 Flat Piedmont Donors   │
+│ • Synthetic Difference-in-Differences (SDID) using I-95 & I-295 Control Donors         │
 │ • Falsification, Placebo & Permutation Testing Suite                                  │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                             │
@@ -131,9 +131,9 @@ docs/
 
 ## 4. Key Scientific & Empirical Findings (Phase 1)
 
-- **Potomac Gorge Sag Profile**: Isolated the authentic roadway elevation ($Z \approx 35.75\text{m} - 46.14\text{m}$ NAVD88) across the 450m American Legion Bridge span, validated against official VDOT/MDOT SHA As-Built blueprints with $\le 0.0050\text{m}$ error.
-- **Topographical Friction Index (TFI)**: Proved the ALMB corridor exhibits **~40% higher geometric resistance** ($\mu_{\text{TFI}} = 0.591$) than flat Piedmont control corridors (I-95 $\mu = 0.414$, I-295 $\mu = 0.438$).
-- **Savitzky-Golay Superiority**: Quadratic filtering ($w=5, p=2$) attenuated unphysical vertical jerk energy by **$6.75\times$** ($8.64 \times 10^{-9}$ down to $1.28 \times 10^{-9}\text{ m}^{-2}$) and cut Total Variation by **$30.6\%$** without blunting the physical sag trough.
+- **Potomac Gorge Sag Profile**: Sag low point ≈36 m NAVD88 from measured ASPRS Class 17 deck returns on ALB inner-loop stations 37–40 (44.2 m → 35.9 m NAVD88; OSM bridge way ≈ chainage 3,661–4,088 m, ≈427 m). Observed inner-loop grades: −3.26% descent, +3.49% climb (edge stations excluded). Deck elevations are not yet validated against an independent reference (no cited as-built profile is in the repo; the former `configs/bridge_profile.csv` was derived from this pipeline's own output and was removed as circular).
+- **Topographical Friction Index (TFI)**: The ALMB corridor shows **~37–41% higher mean TFI** ($\mu_{\text{TFI}} = 0.598$) than the control corridors (I-95 $\mu = 0.426$, I-295 $\mu = 0.438$), driven by sustained |grade| (mean 2.10% vs 1.57% / 1.47%). Note the controls are **not flat**: their peak grades (I-95 −3.28%/+3.60%, I-295 −3.72%/+3.67%) match or exceed ALB's.
+- **Savitzky-Golay Smoothing**: Quadratic filtering ($w=5, p=2$) on the measured ALB inner-loop profile attenuated vertical jerk energy by **$7.1\times$** ($7.74 \times 10^{-9}$ down to $1.09 \times 10^{-9}\text{ m}^{-2}$) and cut Total Variation by **$29.4\%$** (36.31% → 25.62%).
 - **Canonical Dimensional Mart**: Consolidated 406 stations (129 on I-495, 153 on I-95, 124 on I-295) with 0 nulls and 0 NaNs into `data/processed/spatial_feature_mart.parquet`.
 
 ---
@@ -178,8 +178,7 @@ uv run pytest -v
 
 ```
 TopoFlow/
-├── configs/                  # Corridor bounds, parameters & as-built blueprint profiles
-│   ├── bridge_profile.csv    # Official VDOT/MDOT bridge deck elevation blueprints
+├── configs/                  # Corridor bounds & parameters (optional cited bridge reference)
 │   └── corridors.yaml        # Bounding boxes, centroids, and mileposts
 ├── data/
 │   ├── raw/                  # Immutable raw data (USGS EPQS, 3DEP LiDAR point clouds)

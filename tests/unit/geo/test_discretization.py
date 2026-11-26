@@ -7,10 +7,13 @@ station tagging, and Parquet serialization.
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
+import pandas as pd
 import pytest
 from shapely.geometry import LineString, Point
 
@@ -23,6 +26,7 @@ from topoflow.constants import (
 from topoflow.geo.discretization import (
     DiscretizationError,
     SpatialDiscretizer,
+    assign_station_way_attributes,
     compute_heading,
     generate_segment_id,
     menger_curvature,
@@ -264,3 +268,300 @@ class TestSpatialDiscretizerEndToEnd:
         discretizer = SpatialDiscretizer()
         with pytest.raises(DiscretizationError, match="empty GeoDataFrame"):
             discretizer.discretize_corridors_dataframe(gpd.GeoDataFrame())
+
+    def test_carriageway_columns_not_propagated(
+        self, sample_corridors_gdf: gpd.GeoDataFrame
+    ) -> None:
+        """Carriageway-level QA columns never leak into station rows."""
+        stations_gdf = SpatialDiscretizer().discretize_corridors_dataframe(sample_corridors_gdf)
+        for col in ("way_intervals", "max_junction_gap_m", "length_meters", "is_continuous"):
+            assert col not in stations_gdf.columns
+
+
+# =============================================================================
+# Per-station OSM way attributes
+# =============================================================================
+
+BRIDGE_START_M = 3650.0
+BRIDGE_END_M = 4090.0
+
+
+def _is_missing(value: object) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
+def _three_way_intervals() -> list[dict]:
+    """Approach / bridge / approach intervals along a 5 km carriageway (metres)."""
+    return [
+        {
+            "start_m": 0.0,
+            "end_m": BRIDGE_START_M,
+            "bridge": False,
+            "lanes": 4,
+            "maxspeed": "55 mph",
+            "way_id": 1,
+        },
+        {
+            "start_m": BRIDGE_START_M,
+            "end_m": BRIDGE_END_M,
+            "bridge": True,
+            "lanes": 5,
+            "maxspeed": "65 mph",
+            "way_id": 2,
+        },
+        {
+            "start_m": BRIDGE_END_M,
+            "end_m": 5000.0,
+            "bridge": False,
+            "lanes": None,
+            "maxspeed": None,
+            "way_id": 3,
+        },
+    ]
+
+
+class TestAssignStationWayAttributes:
+    """Tests for interval lookup of has_bridge / lanes / maxspeed per station chainage."""
+
+    def test_keys_and_alignment(self) -> None:
+        chainages = np.array([0.0, 100.0, 3700.0, 4500.0])
+        out = assign_station_way_attributes(chainages, _three_way_intervals())
+        assert set(out.keys()) == {"has_bridge", "lanes", "maxspeed"}
+        for values in out.values():
+            assert len(values) == len(chainages)
+
+    def test_values_inherited_from_containing_interval(self) -> None:
+        chainages = np.array([100.0, 3700.0, 4000.0, 4500.0])
+        out = assign_station_way_attributes(chainages, _three_way_intervals())
+        assert [bool(v) for v in out["has_bridge"]] == [False, True, True, False]
+        assert out["lanes"] == [4, 5, 5, None]
+        assert out["maxspeed"] == ["55 mph", "65 mph", "65 mph", None]
+
+    def test_bounds_inclusive(self) -> None:
+        intervals = [
+            {
+                "start_m": 100.0,
+                "end_m": 200.0,
+                "bridge": True,
+                "lanes": 3,
+                "maxspeed": "50 mph",
+                "way_id": 9,
+            }
+        ]
+        out = assign_station_way_attributes(np.array([99.9, 100.0, 200.0, 200.1]), intervals)
+        assert [bool(v) for v in out["has_bridge"]] == [False, True, True, False]
+        assert out["lanes"] == [None, 3, 3, None]
+        assert out["maxspeed"] == [None, "50 mph", "50 mph", None]
+
+    def test_uncovered_stations_default_false_none(self) -> None:
+        intervals = [
+            {
+                "start_m": 1000.0,
+                "end_m": 1500.0,
+                "bridge": True,
+                "lanes": 4,
+                "maxspeed": "65 mph",
+                "way_id": 1,
+            }
+        ]
+        out = assign_station_way_attributes(np.array([0.0, 500.0, 2000.0]), intervals)
+        assert [bool(v) for v in out["has_bridge"]] == [False, False, False]
+        assert out["lanes"] == [None, None, None]
+        assert out["maxspeed"] == [None, None, None]
+
+    def test_bridge_only_from_bridge_interval(self) -> None:
+        """A shared-boundary station is a bridge only if a bridge interval covers it."""
+        out = assign_station_way_attributes(
+            np.array([BRIDGE_START_M, BRIDGE_END_M, 3000.0]), _three_way_intervals()
+        )
+        assert [bool(v) for v in out["has_bridge"]] == [True, True, False]
+
+    def test_empty_intervals(self) -> None:
+        out = assign_station_way_attributes(np.array([0.0, 100.0, 200.0]), [])
+        assert [bool(v) for v in out["has_bridge"]] == [False, False, False]
+        assert out["lanes"] == [None, None, None]
+        assert out["maxspeed"] == [None, None, None]
+
+    def test_empty_chainages(self) -> None:
+        out = assign_station_way_attributes(np.array([], dtype=float), _three_way_intervals())
+        assert list(out["has_bridge"]) == []
+        assert list(out["lanes"]) == []
+        assert list(out["maxspeed"]) == []
+
+    def test_unsorted_intervals(self) -> None:
+        out = assign_station_way_attributes(
+            np.array([100.0, 3800.0]), list(reversed(_three_way_intervals()))
+        )
+        assert [bool(v) for v in out["has_bridge"]] == [False, True]
+        assert out["lanes"] == [4, 5]
+
+
+class TestResampleWithWayIntervals:
+    """Tests for per-station attribute precedence inside resample_carriageway_stations."""
+
+    @pytest.fixture
+    def line_5km(self) -> LineString:
+        return LineString([(310000.0, 4310000.0), (310000.0, 4315000.0)])
+
+    def test_way_intervals_take_precedence(self, line_5km: LineString) -> None:
+        stations = resample_carriageway_stations(
+            line_metric=line_5km,
+            corridor_id="alb_i495",
+            direction="inner_loop",
+            extra_metadata={
+                "has_bridge": True,
+                "lanes": 9,
+                "maxspeed": "99 mph",
+                "route": "I-495",
+            },
+            way_intervals=_three_way_intervals(),
+        )
+        assert len(stations) == 51
+        by_chainage = {st["chainage_m"]: st for st in stations}
+        bridge_chainages = sorted(c for c, st in by_chainage.items() if st["has_bridge"])
+        assert bridge_chainages == [3700.0, 3800.0, 3900.0, 4000.0]
+        assert by_chainage[100.0]["lanes"] == 4
+        assert by_chainage[100.0]["maxspeed"] == "55 mph"
+        assert by_chainage[3800.0]["lanes"] == 5
+        assert by_chainage[4500.0]["lanes"] is None
+        assert by_chainage[4500.0]["maxspeed"] is None
+        # Non-way metadata still propagates
+        assert all(st["route"] == "I-495" for st in stations)
+
+    def test_without_way_intervals_metadata_unchanged(self, line_5km: LineString) -> None:
+        meta = {"has_bridge": True, "lanes": 5, "maxspeed": "65 mph", "route": "I-495"}
+        stations = resample_carriageway_stations(
+            line_metric=line_5km,
+            corridor_id="alb_i495",
+            direction="inner_loop",
+            extra_metadata=meta,
+        )
+        for st in stations:
+            assert st["has_bridge"] is True
+            assert st["lanes"] == 5
+            assert st["maxspeed"] == "65 mph"
+            assert st["route"] == "I-495"
+
+    def test_empty_way_intervals_yields_false_none(self, line_5km: LineString) -> None:
+        stations = resample_carriageway_stations(
+            line_metric=line_5km,
+            corridor_id="alb_i495",
+            direction="inner_loop",
+            extra_metadata={"has_bridge": True, "lanes": 5, "maxspeed": "65 mph"},
+            way_intervals=[],
+        )
+        assert not any(st["has_bridge"] for st in stations)
+        assert all(st["lanes"] is None for st in stations)
+        assert all(st["maxspeed"] is None for st in stations)
+
+
+class TestDiscretizeWithWayIntervalsColumn:
+    """End-to-end per-station attribution from a JSON ``way_intervals`` column."""
+
+    @pytest.fixture
+    def carriageway_gdf(self) -> gpd.GeoDataFrame:
+        line_metric = LineString([(310000.0, 4310000.0), (310000.0, 4315000.0)])
+        line_wgs84 = gpd.GeoSeries([line_metric], crs=CRS_METRIC).to_crs(CRS_WGS84).iloc[0]
+        return gpd.GeoDataFrame(
+            {
+                "corridor_id": ["alb_i495"],
+                "direction": ["inner_loop"],
+                "route": ["I-495"],
+                "lanes": [5],
+                "maxspeed": ["65 mph"],
+                "has_bridge": [True],
+                "length_meters": [5000.0],
+                "max_junction_gap_m": [0.0],
+                "is_continuous": [True],
+                "way_intervals": [json.dumps(_three_way_intervals())],
+            },
+            geometry=[line_wgs84],
+            crs=CRS_WGS84,
+        )
+
+    def test_per_station_bridge_flags(self, carriageway_gdf: gpd.GeoDataFrame) -> None:
+        stations = SpatialDiscretizer(interval_m=100.0).discretize_corridors_dataframe(
+            carriageway_gdf
+        )
+        assert len(stations) >= 50
+        is_bridge = stations["has_bridge"].astype(bool)
+        bridge_chainages = sorted(stations.loc[is_bridge, "chainage_m"].round(3).tolist())
+        assert bridge_chainages == [3700.0, 3800.0, 3900.0, 4000.0]
+        assert int((~is_bridge).sum()) == len(stations) - 4
+
+    def test_per_station_lanes_and_maxspeed(self, carriageway_gdf: gpd.GeoDataFrame) -> None:
+        stations = SpatialDiscretizer().discretize_corridors_dataframe(carriageway_gdf)
+        at = stations.set_index(stations["chainage_m"].round(3))
+        assert at.loc[100.0, "lanes"] == 4
+        assert at.loc[100.0, "maxspeed"] == "55 mph"
+        assert at.loc[3800.0, "lanes"] == 5
+        assert at.loc[3800.0, "maxspeed"] == "65 mph"
+        assert _is_missing(at.loc[4500.0, "lanes"])
+        assert _is_missing(at.loc[4500.0, "maxspeed"])
+
+    def test_carriageway_columns_dropped(self, carriageway_gdf: gpd.GeoDataFrame) -> None:
+        stations = SpatialDiscretizer().discretize_corridors_dataframe(carriageway_gdf)
+        for col in ("way_intervals", "max_junction_gap_m", "length_meters", "is_continuous"):
+            assert col not in stations.columns
+        assert (stations["route"] == "I-495").all()
+
+
+class TestDiscretizeWithoutWayIntervals:
+    """Without per-way intervals, carriageway-level bridge/lane/speed must not be smeared."""
+
+    @staticmethod
+    def _carriageway(way_intervals: object = "absent") -> gpd.GeoDataFrame:
+        line_metric = LineString([(310000.0, 4310000.0), (310000.0, 4312000.0)])
+        line_wgs84 = gpd.GeoSeries([line_metric], crs=CRS_METRIC).to_crs(CRS_WGS84).iloc[0]
+        data: dict[str, list] = {
+            "corridor_id": ["alb_i495"],
+            "direction": ["inner_loop"],
+            "route": ["I-495"],
+            "lanes": [5],
+            "maxspeed": ["65 mph"],
+            "has_bridge": [True],
+        }
+        if way_intervals != "absent":
+            data["way_intervals"] = [way_intervals]
+        return gpd.GeoDataFrame(data, geometry=[line_wgs84], crs=CRS_WGS84)
+
+    @pytest.mark.parametrize("way_intervals", ["absent", None])
+    def test_station_attributes_null(self, way_intervals: object) -> None:
+        stations = SpatialDiscretizer().discretize_corridors_dataframe(
+            self._carriageway(way_intervals)
+        )
+        assert len(stations) == 21
+        for col in ("has_bridge", "lanes", "maxspeed"):
+            assert col in stations.columns
+            assert all(_is_missing(v) for v in stations[col].tolist()), col
+        # Non-way metadata still propagates.
+        assert (stations["route"] == "I-495").all()
+        assert "way_intervals" not in stations.columns
+
+    def test_mixed_rows_with_and_without_intervals(self) -> None:
+        with_iv = self._carriageway(
+            json.dumps(
+                [
+                    {
+                        "start_m": 500.0,
+                        "end_m": 700.0,
+                        "bridge": True,
+                        "lanes": 3,
+                        "maxspeed": "50 mph",
+                        "way_id": 1,
+                    }
+                ]
+            )
+        )
+        without_iv = self._carriageway(None)
+        without_iv["direction"] = ["outer_loop"]
+        gdf = gpd.GeoDataFrame(pd.concat([with_iv, without_iv], ignore_index=True), crs=CRS_WGS84)
+        stations = SpatialDiscretizer().discretize_corridors_dataframe(gdf)
+        inner = stations[stations["direction"] == "inner_loop"]
+        outer = stations[stations["direction"] == "outer_loop"]
+        inner_bridge = sorted(
+            inner.loc[inner["has_bridge"].fillna(False).astype(bool), "chainage_m"].tolist()
+        )
+        assert inner_bridge == [500.0, 600.0, 700.0]
+        assert all(_is_missing(v) for v in outer["has_bridge"].tolist())
+        assert all(_is_missing(v) for v in outer["lanes"].tolist())

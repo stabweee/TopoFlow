@@ -2,7 +2,7 @@
 
 **Project**: Spatio-Temporal Topographical Friction & Causal Impact Modeling of the American Legion Bridge Sag Bottleneck  
 **Primary Corridor**: I-495 Capital Beltway (Potomac River Sag Crossing, Cabin John, MD to McLean, VA)  
-**Control Donor Corridors**: I-95 (Lorton/Woodbridge Flat Tangents), I-295 (Anacostia Freeway Flat Tangents)  
+**Control Donor Corridors**: I-95 (Lorton/Woodbridge), I-295 (Anacostia Freeway); rolling terrain, not flat  
 **Document Purpose**: Canonical, high-level technical overview explaining how TopoFlow works from raw data ingestion to causal econometrics, simulation, and cloud delivery.
 
 ---
@@ -15,7 +15,7 @@ Conventional transportation planning often diagnoses this bottleneck with simpli
 
 ```
        Virginia Approach              Potomac River Gorge               Maryland Approach
-    [ Downhill Descent -3.2% ]            [ Bridge ]               [ Uphill Climb +3.8% ]
+    [ Downhill Descent -3.3% ]            [ Bridge ]               [ Uphill Climb +3.5% ]
 ════════════════════════════════\                                /════════════════════════════════
                                  \                              /
                                   \____[ Sag Inflection ]______/
@@ -48,7 +48,7 @@ Conventional transportation planning often diagnoses this bottleneck with simpli
        [ Menger Curvature κ  ]                    │                                │
                 │                                 └────────────────┬───────────────┘
                 │                                                  │
-                │                                    [ As-Built Blueprint Check ]
+                │                                    [ Cited Reference Check* ]
                 │                                    [ Savitzky-Golay Filter    ]
                 ▼                                                  ▼
      ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -136,7 +136,7 @@ Conventional transportation planning often diagnoses this bottleneck with simpli
 * **Hybrid Physical Elevation Pipeline (`src/topoflow/geo/elevation.py`)**:
   * *Land Approaches*: Ingests bare-earth USGS 3DEP 1-meter LiDAR DEM rasters via `rasterio`.
   * *Bridge Deck Span*: Directly queries raw USGS 3DEP point clouds (`.laz`) using `laspy` to extract laser returns classified under **ASPRS Class 17 ("Bridge Deck")**. This samples the true physical asphalt surface of the bridge ($\pm 3-5\text{ cm}$ accuracy) rather than dropping into the Potomac River water surface below.
-  * *As-Built Validation*: Automatically cross-validates extracted bridge deck elevations against Maryland/Virginia DOT structural blueprints (NBI Structure ID `100000495000010`).
+  * *Reference Validation (pending)*: Cross-validates deck elevations against an independent, cited reference profile when one is provided (`configs/bridge_asbuilt_reference.csv`); none is in the repo yet.
   * *Savitzky-Golay Polynomial Filter*: Applies a degree-2 polynomial filter across a 5-station (500m) window to eliminate point noise while preserving true parabolic vertical curves, directly computing continuous analytical derivatives ($\frac{dz}{dx}$) and vertical grade percentages.
 * **Spatial Feature Mart (`src/topoflow/geo/feature_mart.py`)**: Consolidates 100m station geometries, grades, and curvatures into `spatial_feature_mart.parquet`.
 
@@ -163,7 +163,7 @@ Conventional transportation planning often diagnoses this bottleneck with simpli
   * Identifies the causal impact of topography strictly through time-varying interactions.
 * **Asymmetric Grade Formulation**: Splits slope into uphill climb ($\text{Grade}^+$) and downhill descent ($\text{Grade}^-$), preventing downhill visual compression braking and uphill gravitational engine drag from artificially canceling each other out.
 * **Driscoll-Kraay Standard Errors**: Employs non-parametric spatial-lag and autocorrelation covariance estimators, preventing false-precision inflation from persistent time series and spatial cross-station correlation.
-* **Bayesian Structural Time Series (BSTS) / CausalImpact (`src/topoflow/models/bsts_causal_impact.py`)**: Uses flat control segments of I-95 (Lorton) and I-295 (Anacostia) as an external synthetic control donor pool. When rain strikes, BSTS predicts what speeds on the American Legion Bridge would have been if it were completely flat, isolating the **topographical rain multiplier** with 95% Bayesian Credible Intervals.
+* **Bayesian Structural Time Series (BSTS) / CausalImpact (`src/topoflow/models/bsts_causal_impact.py`)**: Uses control segments of I-95 (Lorton) and I-295 (Anacostia) as an external synthetic control donor pool. When rain strikes, BSTS predicts what speeds on the American Legion Bridge would have been if it were completely flat, isolating the **topographical rain multiplier** with 95% Bayesian Credible Intervals.
 * **Econometric Robustness Suite (`src/topoflow/models/robustness.py`)**: Runs placebos in space, placebos in time ($+24\text{hr}$ rain shift), leave-one-out sensor jackknife tests, and sensitivity reruns filtering strictly for raw observations (`WHERE imputation_flag == 0`).
 
 ### Phase 5: Societal Valuation, Environmental Carbon Physics & Eco-Routing Simulation

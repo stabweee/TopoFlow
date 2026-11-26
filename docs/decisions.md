@@ -59,14 +59,14 @@ To balance engineering velocity with scientific rigor, every architectural decis
 * **Decision Tier**: **Tier 1 (One-Way Door - Locked Upfront)**
 * **Context**: Standard USGS bare-earth DEM rasters are hydro-enforced, plummeting $30\text{m}$ into the Potomac River basin.
 * **Decision**: **Dual-Source Hybrid Elevation: USGS 3DEP 1m EPQS Bare-Earth + USGS 3DEP LiDAR ASPRS Class 17 Bridge Deck Returns**.
-* **Rationale**: Roadway approach slopes use authentic USGS bare-earth 1m queries, while the 450m bridge span uses 1,583 Class 17 laser returns (~35.75m–46.14m NAVD88) validated against official VDOT/MDOT SHA As-Built drawings ($\le 0.005\text{m}$ error).
+* **Rationale**: Roadway approach slopes use authentic USGS bare-earth 1m queries, while the bridge span uses measured ASPRS Class 17 deck returns on ALB inner-loop stations 37–40 (44.2 m → 35.9 m NAVD88; OSM bridge way ≈ chainage 3,661–4,088 m, ≈427 m). Other OSM-tagged bridge stations without LiDAR are interpolated and flagged. Deck elevations are not yet validated against an independent reference (no cited as-built profile is in the repo; the former `configs/bridge_profile.csv` was derived from this pipeline's own output and was removed as circular).
 * **Rejected**: Satellite SRTM (30m resolution too coarse); raw bare-earth alone (creates artificial $+15\%$ river cliff).
 
 ### Choice 1.5: Elevation Smoothing & Derivative Formulation
 * **Decision Tier**: **Tier 2 (Two-Way Door - Modular Default)**
 * **Context**: Raw discrete elevation queries contain micro-scale discretization jitter that creates artificial gradient spikes when differenced.
 * **Decision**: **Quadratic Savitzky-Golay Polynomial Filter ($w=5$ stations / 500m, $p=2$) with Analytical Derivative Evaluation**.
-* **Rationale**: Computes continuous, smooth analytical 1st and 2nd derivatives directly from polynomial coefficients. Reduces total variation by $30.6\%$, suppresses unphysical jerk energy by $6.75\times$, and cuts RMSE by $1.95\times$ without blunting the true sag inflection point.
+* **Rationale**: Computes continuous, smooth analytical 1st and 2nd derivatives directly from polynomial coefficients. On the measured ALB profile it reduces total variation by $29.4\%$ and jerk energy by $7.1\times$ (a synthetic benchmark additionally shows a $1.95\times$ RMSE reduction, illustration only).
 * **Rejected**: Raw two-point finite differences (extreme noise amplification); simple moving average (flattens true sag peaks).
 
 ### Choice 1.6: Spatial Feature Mart Schema & Storage Grain
@@ -112,8 +112,8 @@ To balance engineering velocity with scientific rigor, every architectural decis
 
 ### Choice 4.2: Control Corridor Selection (Donor Pool)
 * **Decision Tier**: **Tier 1 (One-Way Door - Locked Upfront)**
-* **Decision**: **I-95 Lorton-Woodbridge & I-295 Anacostia Freeway Flat Control Donors**.
-* **Rationale**: Selected because they share the same DC-area macroeconomic commuter patterns, weather events, and federal holiday schedules, but have flat/mild topography ($\le \pm 2.0\%$). Allows synthetic matching to isolate the pure treatment effect of the Potomac sag curve.
+* **Decision**: **I-95 Lorton-Woodbridge & I-295 Anacostia Freeway Control Donors**.
+* **Rationale**: Selected because they share the same DC-area macroeconomic commuter patterns, weather events, and federal holiday schedules, and lack a river-gorge sag of ALB's form. **Measured caveat**: they are not flat; peak smoothed grades reach −3.28%/+3.60% (I-95) and −3.72%/+3.67% (I-295) versus ALB's −3.41%/+3.49%, and I-295 has more sag-classified stations (51) than ALB (32). Matching must therefore be on grade regime / sag geometry, not on 'flat vs. sloped' (open item).
 
 ### Choice 4.3: Standard Error Corrections
 * **Decision Tier**: **Tier 1 (One-Way Door - Locked Upfront)**

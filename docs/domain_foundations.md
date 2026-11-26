@@ -201,7 +201,7 @@ The **TopoFlow** project bridges high-level transport theory and empirical data 
 
 ```
        VIRGINIA APPROACH               POTOMAC RIVER CROSSING            MARYLAND APPROACH
-       -3.5% Downgrade                     Flat Deck                      +3.8% Upgrade
+       -3.3% Downgrade                     Flat Deck                      +3.5% Upgrade
   ═══════════════════════════════╗                              ╔═══════════════════════════════
                                  ╚══════════════════════════════╝
                                          Sag Trough (100m)
