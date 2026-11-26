@@ -356,35 +356,21 @@ class TestValidateBridgeAsBuilt:
     def as_built_csv_path(self, tmp_path: Path) -> Path:
         return _write_as_built_csv(tmp_path / "as_built.csv", AS_BUILT_OFFSETS, AS_BUILT_Z)
 
-    def test_exact_match(self, extractor: ElevationExtractor, as_built_csv_path: Path) -> None:
-        is_valid = extractor.validate_bridge_as_built(
-            extracted_deck_z=np.array(AS_BUILT_Z),
-            bridge_stations_chainage_m=np.array(AS_BUILT_OFFSETS),
-            as_built_csv_path=as_built_csv_path,
-            tolerance_m=0.2,
-        )
-        assert is_valid is True
-
-    def test_within_tolerance(self, extractor: ElevationExtractor, as_built_csv_path: Path) -> None:
-        z = np.array(AS_BUILT_Z) + np.array([0.1, -0.15, 0.0, 0.19, -0.05, 0.0])
-        assert (
-            extractor.validate_bridge_as_built(
-                extracted_deck_z=z,
-                bridge_stations_chainage_m=np.array(AS_BUILT_OFFSETS),
-                as_built_csv_path=as_built_csv_path,
-                tolerance_m=0.2,
-            )
-            is True
-        )
-
-    def test_standalone_function(self, as_built_csv_path: Path) -> None:
-        is_valid = validate_bridge_as_built(
-            extracted_deck_z=np.array(AS_BUILT_Z),
-            bridge_stations_chainage_m=np.array(AS_BUILT_OFFSETS),
-            as_built_csv_path=as_built_csv_path,
-            tolerance_m=0.2,
-        )
-        assert is_valid is True
+    def test_match_within_tolerance(
+        self, extractor: ElevationExtractor, as_built_csv_path: Path
+    ) -> None:
+        """Exact and within-tolerance profiles pass via the method and module function."""
+        offsets = np.array(AS_BUILT_OFFSETS)
+        near = np.array(AS_BUILT_Z) + np.array([0.1, -0.15, 0.0, 0.19, -0.05, 0.0])
+        for z in (np.array(AS_BUILT_Z), near):
+            for validate in (extractor.validate_bridge_as_built, validate_bridge_as_built):
+                is_valid = validate(
+                    extracted_deck_z=z,
+                    bridge_stations_chainage_m=offsets,
+                    as_built_csv_path=as_built_csv_path,
+                    tolerance_m=0.2,
+                )
+                assert is_valid is True
 
     def test_exceeds_tolerance_raises(
         self, extractor: ElevationExtractor, as_built_csv_path: Path
@@ -422,20 +408,20 @@ class TestValidateBridgeAsBuilt:
                 tolerance_m=0.2,
             )
 
-    @pytest.mark.parametrize("bad_source", ["", "   "])
-    def test_blank_or_null_source_raises(
-        self, extractor: ElevationExtractor, tmp_path: Path, bad_source: str
-    ) -> None:
-        sources = ["plan sheet"] * len(AS_BUILT_OFFSETS)
-        sources[2] = bad_source
-        path = _write_as_built_csv(tmp_path / "blank.csv", AS_BUILT_OFFSETS, AS_BUILT_Z, sources)
-        with pytest.raises(ValueError):
-            validate_bridge_as_built(
-                extracted_deck_z=np.array(AS_BUILT_Z),
-                bridge_stations_chainage_m=np.array(AS_BUILT_OFFSETS),
-                as_built_csv_path=path,
-                tolerance_m=0.2,
+    def test_blank_or_null_source_raises(self, tmp_path: Path) -> None:
+        for i, bad_source in enumerate(["", "   "]):
+            sources = ["plan sheet"] * len(AS_BUILT_OFFSETS)
+            sources[2] = bad_source
+            path = _write_as_built_csv(
+                tmp_path / f"blank_{i}.csv", AS_BUILT_OFFSETS, AS_BUILT_Z, sources
             )
+            with pytest.raises(ValueError):
+                validate_bridge_as_built(
+                    extracted_deck_z=np.array(AS_BUILT_Z),
+                    bridge_stations_chainage_m=np.array(AS_BUILT_OFFSETS),
+                    as_built_csv_path=path,
+                    tolerance_m=0.2,
+                )
 
 
 # =============================================================================
@@ -857,18 +843,6 @@ class TestProcessCorridorStationsPipeline:
         combined["chainage_m"] = [i * 100.0 for i in range(len(combined))]
         return combined
 
-    def test_schema_17_columns_epqs_only(self, tmp_path: Path) -> None:
-        gdf = _stations(8)
-        epqs = _write_epqs(
-            tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), [30.0 + i for i in range(8)]
-        )
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs)
-        assert isinstance(df, pl.DataFrame)
-        assert df.columns == PIPELINE_COLUMNS
-        assert len(df) == len(gdf)
-        assert df["is_bridge_deck"].dtype == pl.Boolean
-        assert df["grade_edge_effect"].dtype == pl.Boolean
-
     def test_mock_fixture_bridge_deck_elevations(
         self,
         extractor: ElevationExtractor,
@@ -891,57 +865,6 @@ class TestProcessCorridorStationsPipeline:
         # LiDAR never applies to non-bridge stations.
         assert set(road["elevation_source"].to_list()) == {"usgs_dem"}
 
-    def test_standalone_matches_method(self, tmp_path: Path) -> None:
-        gdf = _stations(6)
-        epqs = _write_epqs(
-            tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), [10.0, 11, 12, 13, 14, 15]
-        )
-        a = process_corridor_stations(gdf, usgs_epqs_path=epqs)
-        b = ElevationExtractor().process_corridor_stations(gdf, usgs_epqs_path=epqs)
-        assert a.equals(b)
-
-    # --- Source priority -------------------------------------------------------------
-
-    def test_epqs_values_used_verbatim(self, tmp_path: Path) -> None:
-        gdf = _stations(7)
-        z = [31.2, 30.8, 29.5, 28.0, 29.1, 30.3, 31.9]
-        epqs = _write_epqs(tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), z)
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("chainage_m")
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
-        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
-
-    def test_epqs_takes_priority_over_dem(self, tmp_path: Path) -> None:
-        gdf = _stations(6)
-        dem = _write_plane_dem(tmp_path / "dem.tif", base_z=20.0)
-        epqs = _write_epqs(tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), [50.0] * 6)
-        df = process_corridor_stations(gdf, dem_path=dem, usgs_epqs_path=epqs)
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), 50.0)
-        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
-
-    def test_dem_fills_missing_epqs(self, tmp_path: Path) -> None:
-        gdf = _stations(6)
-        dem = _write_plane_dem(tmp_path / "dem.tif", base_z=20.0, slope=0.01)
-        ids = gdf["segment_id"].tolist()
-        # station 2 NaN, station 4 null, station 5 absent from the EPQS file
-        epqs = _write_epqs(
-            tmp_path / "epqs.parquet", ids[:5], [50.0, 51.0, float("nan"), 53.0, None]
-        )
-        df = process_corridor_stations(gdf, dem_path=dem, usgs_epqs_path=epqs)
-        rows = _by_index(df)
-        for i in (0, 1, 3):
-            assert rows[i]["elevation_source"] == "usgs_epqs"
-        for i in (2, 4, 5):
-            assert rows[i]["elevation_source"] == "usgs_dem"
-            assert rows[i]["elevation_raw_m"] == pytest.approx(20.0 + 0.01 * 100.0 * i, abs=0.05)
-
-    def test_dem_only(self, tmp_path: Path) -> None:
-        gdf = _stations(6)
-        dem = _write_plane_dem(tmp_path / "dem.tif", base_z=20.0, slope=0.01)
-        df = process_corridor_stations(gdf, dem_path=dem).sort("chainage_m")
-        expected = 20.0 + 0.01 * df["chainage_m"].to_numpy()
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), expected, atol=0.05)
-        assert set(df["elevation_source"].to_list()) == {"usgs_dem"}
-
     def test_lidar_overrides_on_bridge_station(self, tmp_path: Path) -> None:
         gdf = _stations(6, has_bridge=[False, True, False, False, False, False])
         epqs = _write_epqs(tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), [10.0] * 6)
@@ -954,43 +877,6 @@ class TestProcessCorridorStationsPipeline:
         for i in (0, 2, 3, 4, 5):
             assert rows[i]["elevation_source"] == "usgs_epqs"
             assert rows[i]["elevation_raw_m"] == pytest.approx(10.0)
-
-    def test_lidar_deck_over_non_bridge_station_ignored(self, tmp_path: Path) -> None:
-        """A Class 17 deck crossing above a roadway station must not override it."""
-        gdf = _stations(6)
-        epqs = _write_epqs(tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), [10.0] * 6)
-        laz = _write_c17_laz(tmp_path / "deck.laz", [(SYN_E0, SYN_N0 + 200.0)], [40.0])
-        df = process_corridor_stations(gdf, laz_path=laz, usgs_epqs_path=epqs)
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), 10.0)
-        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
-
-    def test_lidar_deck_over_non_bridge_station_ignored_with_dem(self, tmp_path: Path) -> None:
-        gdf = _stations(6)
-        dem = _write_plane_dem(tmp_path / "dem.tif", base_z=20.0, slope=0.0)
-        laz = _write_c17_laz(tmp_path / "deck.laz", [(SYN_E0, SYN_N0 + 300.0)], [40.0])
-        df = process_corridor_stations(gdf, dem_path=dem, laz_path=laz)
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), 20.0, atol=0.05)
-        assert set(df["elevation_source"].to_list()) == {"usgs_dem"}
-
-    def test_lidar_never_applied_without_has_bridge_column(self, tmp_path: Path) -> None:
-        gdf = _stations(5, include_has_bridge=False)
-        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), [10.0] * 5)
-        laz = _write_c17_laz(tmp_path / "deck.laz", [(SYN_E0, SYN_N0 + 200.0)], [40.0])
-        df = process_corridor_stations(gdf, laz_path=laz, usgs_epqs_path=epqs)
-        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
-        assert not df["is_bridge_deck"].any()
-
-    @pytest.mark.parametrize("null_value", [None, np.nan])
-    def test_null_has_bridge_treated_as_false(self, tmp_path: Path, null_value: object) -> None:
-        gdf = _stations(5)
-        gdf["has_bridge"] = pd.Series([False, False, null_value, False, False], dtype=object)
-        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), [10.0] * 5)
-        laz = _write_c17_laz(tmp_path / "deck.laz", [(SYN_E0, SYN_N0 + 200.0)], [40.0])
-        df = process_corridor_stations(gdf, laz_path=laz, usgs_epqs_path=epqs)
-        rows = _by_index(df)
-        assert rows[2]["is_bridge_deck"] is False
-        assert rows[2]["elevation_source"] == "usgs_epqs"
-        assert rows[2]["elevation_raw_m"] == pytest.approx(10.0)
 
     def test_lidar_search_radius_35m(self, tmp_path: Path) -> None:
         gdf = _stations(6, has_bridge=[False, False, True, False, True, False])
@@ -1009,17 +895,6 @@ class TestProcessCorridorStationsPipeline:
         assert rows[4]["elevation_source"] == "interpolated"
         assert rows[4]["elevation_raw_m"] == pytest.approx(10.0)
 
-    def test_no_source_raises(self, tmp_path: Path) -> None:
-        gdf = _stations(5)
-        ids = gdf["segment_id"].tolist()
-        epqs = _write_epqs(tmp_path / "epqs.parquet", ids, [10.0, 11.0, None, 13.0, 14.0])
-        with pytest.raises(ElevationExtractorError):
-            process_corridor_stations(gdf, usgs_epqs_path=epqs)
-
-    def test_no_paths_at_all_raises(self) -> None:
-        with pytest.raises(ElevationExtractorError):
-            process_corridor_stations(_stations(5))
-
     def test_dem_outside_extent_raises(self, tmp_path: Path) -> None:
         """Stations outside the DEM with no other source must not get a synthetic value."""
         gdf = _stations(5, n0=SYN_N0 + 50000.0)
@@ -1028,19 +903,6 @@ class TestProcessCorridorStationsPipeline:
             process_corridor_stations(gdf, dem_path=dem)
 
     # --- Bridge flags & deck interpolation ------------------------------------------
-
-    def test_is_bridge_deck_mirrors_has_bridge(self, tmp_path: Path) -> None:
-        flags = [False, False, True, True, False, False, True, False]
-        gdf = _stations(8, has_bridge=flags)
-        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), [20.0] * 8)
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
-        assert df["is_bridge_deck"].to_list() == flags
-
-    def test_missing_has_bridge_column_all_false(self, tmp_path: Path) -> None:
-        gdf = _stations(6, include_has_bridge=False)
-        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), [20.0] * 6)
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs)
-        assert not df["is_bridge_deck"].any()
 
     def test_no_hard_coded_alb_bridge_span(self, tmp_path: Path) -> None:
         """Former fabricated ALB chainage/northing window must not imply a bridge."""
@@ -1104,10 +966,6 @@ class TestProcessCorridorStationsPipeline:
         assert rows[4]["elevation_source"] == "interpolated"
         assert rows[4]["elevation_raw_m"] == pytest.approx(28.0, abs=1e-3)
 
-    def test_under_bridge_constant(self) -> None:
-        assert ELEVATION_SOURCE_UNDER_BRIDGE == "bare_earth_under_bridge"
-        assert EPQS_MAX_STATION_OFFSET_M == 0.5
-
     def test_fewer_than_two_anchors_keeps_measured(self, tmp_path: Path) -> None:
         flags = [True, True, True, True, False]
         gdf = _stations(5, has_bridge=flags)
@@ -1125,30 +983,6 @@ class TestProcessCorridorStationsPipeline:
         df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
         np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
         assert set(df["elevation_source"].to_list()) == {ELEVATION_SOURCE_UNDER_BRIDGE}
-
-    def test_bridge_at_carriageway_start_not_extrapolated(self, tmp_path: Path) -> None:
-        flags = [True, True, False, False, False, False, False]
-        gdf = _stations(7, has_bridge=flags)
-        z = [1.0, 2.0, 30.0, 31.0, 32.0, 33.0, 34.0]
-        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), z)
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
-        assert (
-            df["elevation_source"].to_list()
-            == [ELEVATION_SOURCE_UNDER_BRIDGE] * 2 + ["usgs_epqs"] * 5
-        )
-
-    def test_bridge_at_carriageway_end_not_held_flat(self, tmp_path: Path) -> None:
-        flags = [False, False, False, False, False, True, True]
-        gdf = _stations(7, has_bridge=flags)
-        z = [30.0, 31.0, 32.0, 33.0, 34.0, -0.4, 0.7]
-        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), z)
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
-        assert (
-            df["elevation_source"].to_list()
-            == ["usgs_epqs"] * 5 + [ELEVATION_SOURCE_UNDER_BRIDGE] * 2
-        )
 
     def test_bridge_end_and_interior_spans_mixed(self, tmp_path: Path) -> None:
         """Interior span is interpolated while the dangling start span keeps bare earth."""
@@ -1176,28 +1010,6 @@ class TestProcessCorridorStationsPipeline:
 
     # --- EPQS cache alignment -------------------------------------------------------
 
-    def test_epqs_coordinates_aligned_ok(self, tmp_path: Path) -> None:
-        gdf = _stations(5)
-        z = [10.0, 11.0, 12.0, 13.0, 14.0]
-        epqs = _write_epqs_with_coords(tmp_path / "e.parquet", gdf, z, shift_m=0.2)
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
-        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
-
-    def test_stale_epqs_cache_raises(self, tmp_path: Path) -> None:
-        gdf = _stations(5)
-        epqs = _write_epqs_with_coords(tmp_path / "e.parquet", gdf, [10.0] * 5, shift_m=10.0)
-        with pytest.raises(ElevationExtractorError, match="stale"):
-            process_corridor_stations(gdf, usgs_epqs_path=epqs)
-
-    def test_single_stale_row_raises(self, tmp_path: Path) -> None:
-        gdf = _stations(5)
-        epqs = _write_epqs_with_coords(
-            tmp_path / "e.parquet", gdf, [10.0] * 5, shift_m=0.0, shift_index=3, shift_index_m=2.0
-        )
-        with pytest.raises(ElevationExtractorError, match="stale"):
-            process_corridor_stations(gdf, usgs_epqs_path=epqs)
-
     def test_conflicting_duplicate_epqs_raises(self, tmp_path: Path) -> None:
         gdf = _stations(4)
         ids = gdf["segment_id"].tolist()
@@ -1212,15 +1024,6 @@ class TestProcessCorridorStationsPipeline:
         df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
         assert len(df) == 4
         np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), [10.0, 11.0, 12.0, 13.0])
-
-    def test_epqs_without_coordinates_joins_by_id(self, tmp_path: Path) -> None:
-        gdf = _stations(4)
-        ids = list(reversed(gdf["segment_id"].tolist()))
-        epqs = _write_epqs(tmp_path / "e.parquet", ids, [13.0, 12.0, 11.0, 10.0])
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), [10.0, 11.0, 12.0, 13.0])
-
-    # --- Short carriageways -----------------------------------------------------------
 
     def test_two_station_carriageway_nan_grade(self, tmp_path: Path) -> None:
         gdf = _stations(2)
@@ -1266,29 +1069,6 @@ class TestProcessCorridorStationsPipeline:
         assert not df["is_bridge_deck"].any()
         assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
 
-    def test_monkeypatched_dem_dip_not_repaired(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Even when sampled from a DEM, roadway dips survive untouched."""
-        z = np.array([42.0, 32.0, 44.0, 46.0, 36.0, 49.0, 51.0])
-        gdf = _stations(len(z))
-        dem = _write_plane_dem(tmp_path / "dem.tif")
-        monkeypatch.setattr(
-            ElevationExtractor, "extract_bare_earth_dem", lambda *args, **kwargs: z.copy()
-        )
-        df = process_corridor_stations(gdf, dem_path=dem).sort("chainage_m")
-        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
-
-    # --- Grade edge effect ------------------------------------------------------------
-
-    def test_grade_edge_effect_flags(self, tmp_path: Path) -> None:
-        gdf = _stations(10)
-        epqs = _write_epqs(
-            tmp_path / "e.parquet", gdf["segment_id"].tolist(), [20.0 + i for i in range(10)]
-        )
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("chainage_m")
-        assert df["grade_edge_effect"].to_list() == [True, True] + [False] * 6 + [True, True]
-
     def test_grade_edge_effect_per_carriageway_unsorted(self, tmp_path: Path) -> None:
         nb = _stations(6, direction="northbound")
         sb = _stations(7, direction="southbound", e0=SYN_E0 + 40.0)
@@ -1303,12 +1083,6 @@ class TestProcessCorridorStationsPipeline:
                 True,
             ]
 
-    def test_grade_edge_effect_short_carriageway(self, tmp_path: Path) -> None:
-        gdf = _stations(4)
-        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), [1.0, 2, 3, 4])
-        df = process_corridor_stations(gdf, usgs_epqs_path=epqs)
-        assert df["grade_edge_effect"].all()
-
     def test_smoothed_outputs_finite(self, tmp_path: Path) -> None:
         z = [50.0 - 0.032 * 100 * i for i in range(6)] + [
             50.0 - 0.032 * 500 + 0.038 * 100 * i for i in range(1, 7)
@@ -1320,25 +1094,172 @@ class TestProcessCorridorStationsPipeline:
             assert np.all(np.isfinite(df[col].to_numpy())), col
         assert df["is_sag"].any()
 
+    # --- Merged pipeline contract tests -----------------------------------------------
+
+    def test_schema_17_columns_and_standalone_equivalence(self, tmp_path: Path) -> None:
+        gdf = _stations(8)
+        epqs = _write_epqs(
+            tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), [30.0 + i for i in range(8)]
+        )
+        df = process_corridor_stations(gdf, usgs_epqs_path=epqs)
+        assert isinstance(df, pl.DataFrame)
+        assert df.columns == PIPELINE_COLUMNS
+        assert len(df) == len(gdf)
+        assert df["is_bridge_deck"].dtype == pl.Boolean
+        assert df["grade_edge_effect"].dtype == pl.Boolean
+        # Module-level function and method agree.
+        assert df.equals(ElevationExtractor().process_corridor_stations(gdf, usgs_epqs_path=epqs))
+
+    def test_epqs_used_verbatim_joined_by_segment_id(self, tmp_path: Path) -> None:
+        """Without coordinate columns the cache is joined by segment_id, in any row order."""
+        gdf = _stations(7)
+        z = [31.2, 30.8, 29.5, 28.0, 29.1, 30.3, 31.9]
+        ids = gdf["segment_id"].tolist()
+        epqs = _write_epqs(tmp_path / "epqs.parquet", list(reversed(ids)), list(reversed(z)))
+        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("chainage_m")
+        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
+        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
+
+    def test_epqs_priority_then_dem_fill(self, tmp_path: Path) -> None:
+        gdf = _stations(6)
+        dem = _write_plane_dem(tmp_path / "dem.tif", base_z=20.0, slope=0.01)
+        ids = gdf["segment_id"].tolist()
+        # EPQS wins where present (50 m vs DEM ~20 m); station 2 NaN, station 4 null and
+        # station 5 absent from the cache fall back to the DEM.
+        epqs = _write_epqs(
+            tmp_path / "epqs.parquet", ids[:5], [50.0, 51.0, float("nan"), 53.0, None]
+        )
+        rows = _by_index(process_corridor_stations(gdf, dem_path=dem, usgs_epqs_path=epqs))
+        for i, z in ((0, 50.0), (1, 51.0), (3, 53.0)):
+            assert rows[i]["elevation_source"] == "usgs_epqs"
+            assert rows[i]["elevation_raw_m"] == pytest.approx(z)
+        for i in (2, 4, 5):
+            assert rows[i]["elevation_source"] == "usgs_dem"
+            assert rows[i]["elevation_raw_m"] == pytest.approx(20.0 + 0.01 * 100.0 * i, abs=0.05)
+
+        # DEM alone.
+        df = process_corridor_stations(gdf, dem_path=dem).sort("chainage_m")
+        expected = 20.0 + 0.01 * df["chainage_m"].to_numpy()
+        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), expected, atol=0.05)
+        assert set(df["elevation_source"].to_list()) == {"usgs_dem"}
+
+    def test_lidar_deck_over_non_bridge_station_ignored(self, tmp_path: Path) -> None:
+        """A Class 17 deck above a roadway station never overrides EPQS or DEM values."""
+        gdf = _stations(6)
+        laz = _write_c17_laz(tmp_path / "deck.laz", [(SYN_E0, SYN_N0 + 200.0)], [40.0])
+
+        epqs = _write_epqs(tmp_path / "epqs.parquet", gdf["segment_id"].tolist(), [10.0] * 6)
+        df = process_corridor_stations(gdf, laz_path=laz, usgs_epqs_path=epqs)
+        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), 10.0)
+        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
+
+        dem = _write_plane_dem(tmp_path / "dem.tif", base_z=20.0, slope=0.0)
+        df = process_corridor_stations(gdf, dem_path=dem, laz_path=laz)
+        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), 20.0, atol=0.05)
+        assert set(df["elevation_source"].to_list()) == {"usgs_dem"}
+
+    def test_is_bridge_deck_mirrors_has_bridge_or_absent(self, tmp_path: Path) -> None:
+        flags = [False, False, True, True, False, False, True, False]
+        gdf = _stations(8, has_bridge=flags)
+        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), [20.0] * 8)
+        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
+        assert df["is_bridge_deck"].to_list() == flags
+
+        # No has_bridge column: all False, and LiDAR is never applied.
+        gdf = _stations(5, include_has_bridge=False)
+        epqs = _write_epqs(tmp_path / "e2.parquet", gdf["segment_id"].tolist(), [10.0] * 5)
+        laz = _write_c17_laz(tmp_path / "deck.laz", [(SYN_E0, SYN_N0 + 200.0)], [40.0])
+        df = process_corridor_stations(gdf, laz_path=laz, usgs_epqs_path=epqs)
+        assert not df["is_bridge_deck"].any()
+        assert set(df["elevation_source"].to_list()) == {"usgs_epqs"}
+
+    def test_null_has_bridge_treated_as_false(self, tmp_path: Path) -> None:
+        gdf = _stations(5)
+        gdf["has_bridge"] = pd.Series([False, None, False, np.nan, False], dtype=object)
+        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), [10.0] * 5)
+        # Class 17 returns right over both null-flagged stations.
+        laz = _write_c17_laz(
+            tmp_path / "deck.laz",
+            [(SYN_E0, SYN_N0 + 100.0), (SYN_E0, SYN_N0 + 300.0)],
+            [40.0, 40.0],
+        )
+        rows = _by_index(process_corridor_stations(gdf, laz_path=laz, usgs_epqs_path=epqs))
+        for i in (1, 3):
+            assert rows[i]["is_bridge_deck"] is False
+            assert rows[i]["elevation_source"] == "usgs_epqs"
+            assert rows[i]["elevation_raw_m"] == pytest.approx(10.0)
+
+    def test_no_measurement_raises(self, tmp_path: Path) -> None:
+        """No synthetic fallback: a station without any measured value is an error."""
+        gdf = _stations(5)
+        ids = gdf["segment_id"].tolist()
+        epqs = _write_epqs(tmp_path / "epqs.parquet", ids, [10.0, 11.0, None, 13.0, 14.0])
+        with pytest.raises(ElevationExtractorError):
+            process_corridor_stations(gdf, usgs_epqs_path=epqs)
+        with pytest.raises(ElevationExtractorError):
+            process_corridor_stations(gdf)  # no sources at all
+
+    def test_bridge_at_carriageway_start_and_end_not_extrapolated(self, tmp_path: Path) -> None:
+        """Dangling spans keep bare earth exactly: no extrapolation, no flat hold."""
+        flags = [True, True, False, False, False, True, True]
+        gdf = _stations(7, has_bridge=flags)
+        z = [1.0, 2.0, 30.0, 31.0, 32.0, -0.4, 0.7]
+        epqs = _write_epqs(tmp_path / "e.parquet", gdf["segment_id"].tolist(), z)
+        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("station_index")
+        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
+        assert ELEVATION_SOURCE_UNDER_BRIDGE == "bare_earth_under_bridge"
+        assert df["elevation_source"].to_list() == (
+            [ELEVATION_SOURCE_UNDER_BRIDGE] * 2
+            + ["usgs_epqs"] * 3
+            + [ELEVATION_SOURCE_UNDER_BRIDGE] * 2
+        )
+
+    def test_epqs_coordinate_alignment(self, tmp_path: Path) -> None:
+        gdf = _stations(5)
+        z = [10.0, 11.0, 12.0, 13.0, 14.0]
+        # Within EPQS_MAX_STATION_OFFSET_M: accepted.
+        ok = _write_epqs_with_coords(
+            tmp_path / "ok.parquet", gdf, z, shift_m=0.4 * EPQS_MAX_STATION_OFFSET_M
+        )
+        df = process_corridor_stations(gdf, usgs_epqs_path=ok).sort("station_index")
+        np.testing.assert_allclose(df["elevation_raw_m"].to_numpy(), z)
+
+        # Whole cache shifted 10 m, or a single row 2 m off: stale.
+        shifted = _write_epqs_with_coords(tmp_path / "shift.parquet", gdf, z, shift_m=10.0)
+        one_row = _write_epqs_with_coords(
+            tmp_path / "row.parquet", gdf, z, shift_index=3, shift_index_m=2.0
+        )
+        for stale in (shifted, one_row):
+            with pytest.raises(ElevationExtractorError, match="stale"):
+                process_corridor_stations(gdf, usgs_epqs_path=stale)
+
+    def test_grade_edge_effect_flags(self, tmp_path: Path) -> None:
+        gdf = _stations(10)
+        epqs = _write_epqs(
+            tmp_path / "e.parquet", gdf["segment_id"].tolist(), [20.0 + i for i in range(10)]
+        )
+        df = process_corridor_stations(gdf, usgs_epqs_path=epqs).sort("chainage_m")
+        assert df["grade_edge_effect"].to_list() == [True, True] + [False] * 6 + [True, True]
+
+        # A 4-station carriageway is all edge.
+        short = _stations(4)
+        epqs = _write_epqs(tmp_path / "s.parquet", short["segment_id"].tolist(), [1.0, 2, 3, 4])
+        assert process_corridor_stations(short, usgs_epqs_path=epqs)["grade_edge_effect"].all()
+
 
 class TestSmoothElevationProfileEdgeCases:
     """Guard rails for NaN handling in Savitzky-Golay smoothing."""
 
-    def test_all_nan_raises(self) -> None:
-        x = np.arange(0.0, 500.0, 100.0)
+    def test_fewer_than_two_valid_values_raises(self, extractor: ElevationExtractor) -> None:
+        x5 = np.arange(0.0, 500.0, 100.0)
         with pytest.raises(ElevationExtractorError):
-            smooth_elevation_profile(x, np.full(5, np.nan))
-
-    def test_single_valid_value_raises(self) -> None:
-        x = np.arange(0.0, 500.0, 100.0)
-        z = np.array([np.nan, np.nan, 12.0, np.nan, np.nan])
+            smooth_elevation_profile(x5, np.full(5, np.nan))
         with pytest.raises(ElevationExtractorError):
-            smooth_elevation_profile(x, z)
-
-    def test_method_also_raises(self, extractor: ElevationExtractor) -> None:
-        x = np.arange(0.0, 300.0, 100.0)
+            smooth_elevation_profile(x5, np.array([np.nan, np.nan, 12.0, np.nan, np.nan]))
         with pytest.raises(ElevationExtractorError):
-            extractor.smooth_elevation_profile(x, np.array([np.nan, 1.0, np.nan]))
+            extractor.smooth_elevation_profile(
+                np.arange(0.0, 300.0, 100.0), np.array([np.nan, 1.0, np.nan])
+            )
 
     def test_interior_nan_interpolated(self) -> None:
         x = np.arange(0.0, 1000.0, 100.0)

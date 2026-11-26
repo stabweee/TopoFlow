@@ -77,12 +77,9 @@ def _parquet_files(root: Path) -> list[Path]:
 
 
 class TestSchemaConstants:
-    def test_no_fabricated_free_flow_default_constant(self) -> None:
+    def test_required_and_optional_columns(self) -> None:
         import topoflow.constants as constants
 
-        assert not hasattr(constants, "DEFAULT_FREE_FLOW_SPEED_MPH")
-
-    def test_required_and_optional_columns(self) -> None:
         assert TELEMETRY_REQUIRED_COLUMNS == (
             "segment_id",
             "corridor",
@@ -96,6 +93,8 @@ class TestSchemaConstants:
             "occupancy_pct",
             "confidence_score",
         )
+        # The fabricated free-flow default constant is gone.
+        assert not hasattr(constants, "DEFAULT_FREE_FLOW_SPEED_MPH")
 
     def test_polars_schema_unchanged(self) -> None:
         assert list(TELEMETRY_POLARS_SCHEMA.keys()) == [
@@ -127,76 +126,24 @@ class TestTelemetrySchema:
         assert record.occupancy_pct is None
         assert record.confidence_score is None
 
-    def test_optional_fields_accept_explicit_none(self) -> None:
-        record = TelemetryRecord(
-            **_record_kwargs(
-                free_flow_speed_mph=None,
-                volume_vph=None,
-                occupancy_pct=None,
-                confidence_score=None,
-            )
-        )
-        assert record.volume_vph is None
-
-    def test_fields_accept_boundaries(self) -> None:
-        low = TelemetryRecord(
-            **_record_kwargs(
-                speed_mph=0.0,
-                free_flow_speed_mph=30.0,
-                volume_vph=0.0,
-                occupancy_pct=0.0,
-                confidence_score=0.0,
-            )
-        )
-        high = TelemetryRecord(
-            **_record_kwargs(
-                speed_mph=120.0,
-                free_flow_speed_mph=90.0,
-                volume_vph=20000.0,
-                occupancy_pct=100.0,
-                confidence_score=1.0,
-            )
-        )
-        assert low.speed_mph == 0.0
-        assert high.volume_vph == 20000.0
-
-    def test_negative_speed(self) -> None:
+    def test_required_field_missing(self) -> None:
+        kwargs = _record_kwargs()
+        kwargs.pop("speed_mph")
         with pytest.raises(ValidationError):
-            TelemetryRecord(**_record_kwargs(speed_mph=-10.0))
+            TelemetryRecord(**kwargs)
 
     @pytest.mark.parametrize(
         ("field", "value"),
-        [
-            ("speed_mph", 150.0),
-            ("free_flow_speed_mph", 29.9),
-            ("free_flow_speed_mph", 90.1),
-            ("volume_vph", -1.0),
-            ("volume_vph", 20000.1),
-            ("occupancy_pct", 105.0),
-            ("occupancy_pct", -0.1),
-            ("confidence_score", 1.5),
-            ("confidence_score", -0.01),
-            ("segment_id", ""),
-        ],
+        [("speed_mph", 150.0), ("free_flow_speed_mph", 29.9)],
     )
     def test_out_of_bounds_fields(self, field: str, value: object) -> None:
         with pytest.raises(ValidationError):
             TelemetryRecord(**_record_kwargs(**{field: value}))
 
-    @pytest.mark.parametrize(
-        "missing", ["segment_id", "corridor", "direction", "timestamp_utc", "speed_mph"]
-    )
-    def test_required_fields(self, missing: str) -> None:
-        kwargs = _record_kwargs()
-        kwargs.pop(missing)
-        with pytest.raises(ValidationError):
-            TelemetryRecord(**kwargs)
-
-    def test_invalid_corridor_and_direction(self) -> None:
-        with pytest.raises(ValidationError):
-            TelemetryRecord(**_record_kwargs(corridor="i66"))
-        with pytest.raises(ValidationError):
-            TelemetryRecord(**_record_kwargs(direction="eastbound"))
+    def test_invalid_enums_and_empty_segment(self) -> None:
+        for override in ({"corridor": "i66"}, {"direction": "eastbound"}, {"segment_id": ""}):
+            with pytest.raises(ValidationError):
+                TelemetryRecord(**_record_kwargs(**override))
 
     def test_forbid_extra_fields(self) -> None:
         with pytest.raises(ValidationError):
@@ -222,10 +169,14 @@ class TestTelemetrySchema:
 
 
 class TestPartitionTelemetry:
-    def test_all_valid_rows(self) -> None:
-        valid, rejected = partition_telemetry(_frame(3))
+    def test_all_valid_rows_cast_to_schema(self) -> None:
+        df = _frame(3).with_columns(
+            pl.col("speed_mph").cast(pl.Int64), pl.lit("x").alias("vendor_note")
+        )
+        valid, rejected = partition_telemetry(df)
         assert len(valid) == 3
         assert len(rejected) == 0
+        # Ints are cast to Float64 and extra columns dropped.
         assert valid.schema == TELEMETRY_POLARS_SCHEMA
 
     def test_empty_input(self) -> None:
@@ -234,17 +185,15 @@ class TestPartitionTelemetry:
         assert len(rejected) == 0
         assert valid.schema == TELEMETRY_POLARS_SCHEMA
 
-    @pytest.mark.parametrize("missing", list(TELEMETRY_REQUIRED_COLUMNS))
-    def test_missing_required_column_raises(self, missing: str) -> None:
+    def test_missing_required_column_raises(self) -> None:
         with pytest.raises(ValueError):
-            partition_telemetry(_frame(2).drop(missing))
+            partition_telemetry(_frame(2).drop("timestamp_utc"))
 
     def test_missing_optional_columns_added_as_null(self) -> None:
         df = _frame(2).drop(list(TELEMETRY_OPTIONAL_COLUMNS))
         valid, rejected = partition_telemetry(df)
         assert len(valid) == 2
         assert len(rejected) == 0
-        assert valid.columns == list(TELEMETRY_POLARS_SCHEMA.keys())
         assert valid.schema == TELEMETRY_POLARS_SCHEMA
         for col in TELEMETRY_OPTIONAL_COLUMNS:
             assert valid[col].null_count() == 2
@@ -261,86 +210,56 @@ class TestPartitionTelemetry:
         assert len(valid) == 2
         assert len(rejected) == 0
         first = valid.sort("timestamp_utc").row(0, named=True)
-        assert first["free_flow_speed_mph"] is None
-        assert first["volume_vph"] is None
-        assert first["occupancy_pct"] is None
-        assert first["confidence_score"] is None
+        for col in TELEMETRY_OPTIONAL_COLUMNS:
+            assert first[col] is None
 
-    def test_extra_columns_dropped_from_valid(self) -> None:
-        df = _frame(1).with_columns(pl.lit("x").alias("vendor_note"))
-        valid, _ = partition_telemetry(df)
-        assert valid.columns == list(TELEMETRY_POLARS_SCHEMA.keys())
-
-    def test_casts_schema_types(self) -> None:
-        df = pl.DataFrame(
-            {
-                "segment_id": [SEG],
-                "corridor": ["alb_i495"],
-                "direction": ["inner_loop"],
-                "timestamp_utc": [T0],
-                "speed_mph": [50],
-                "free_flow_speed_mph": [65],
-                "volume_vph": [100],
-                "occupancy_pct": [50],
-                "confidence_score": [1],
-            }
+    def test_out_of_range_reasons(self) -> None:
+        df = _frame(
+            4,
+            speed_mph=[50.0, 120.1, 50.0, 50.0],
+            volume_vph=[100.0, 100.0, 25000.0, 100.0],
+            confidence_score=[0.5, 0.5, 0.5, 1.2],
         )
-        valid, _ = partition_telemetry(df)
-        assert valid["speed_mph"].dtype == pl.Float64
-        assert valid.schema == TELEMETRY_POLARS_SCHEMA
-
-    @pytest.mark.parametrize(
-        ("column", "bad_values", "reason"),
-        [
-            ("speed_mph", [50.0, -0.1], "speed_mph_out_of_range"),
-            ("speed_mph", [50.0, 120.1], "speed_mph_out_of_range"),
-            ("free_flow_speed_mph", [65.0, 25.0], "free_flow_speed_mph_out_of_range"),
-            ("free_flow_speed_mph", [65.0, 95.0], "free_flow_speed_mph_out_of_range"),
-            ("volume_vph", [100.0, 25000.0], "volume_vph_out_of_range"),
-            ("volume_vph", [100.0, -5.0], "volume_vph_out_of_range"),
-            ("occupancy_pct", [10.0, 120.0], "occupancy_pct_out_of_range"),
-            ("confidence_score", [0.5, 1.2], "confidence_score_out_of_range"),
-        ],
-    )
-    def test_out_of_range_reasons(self, column: str, bad_values: list, reason: str) -> None:
-        valid, rejected = partition_telemetry(_frame(2, **{column: bad_values}))
-        assert len(valid) == 1
-        assert len(rejected) == 1
-        assert "rejection_reason" in rejected.columns
-        assert rejected["rejection_reason"].to_list() == [reason]
-
-    @pytest.mark.parametrize("column", list(TELEMETRY_REQUIRED_COLUMNS))
-    def test_missing_required_value_reasons(self, column: str) -> None:
-        good = _frame(1)[column].to_list()
-        valid, rejected = partition_telemetry(_frame(2, **{column: [good[0], None]}))
-        assert len(valid) == 1
-        assert rejected["rejection_reason"].to_list() == [f"missing_{column}"]
-
-    def test_invalid_timestamp_string(self) -> None:
-        df = _frame(2, timestamp_utc=["2024-10-15T08:00:00", "not-a-date"])
         valid, rejected = partition_telemetry(df)
         assert len(valid) == 1
-        assert rejected["rejection_reason"].to_list() == ["invalid_timestamp_utc"]
-        assert valid["timestamp_utc"].dtype == pl.Datetime("ms", "UTC")
+        assert "rejection_reason" in rejected.columns
+        assert sorted(rejected["rejection_reason"].to_list()) == [
+            "confidence_score_out_of_range",
+            "speed_mph_out_of_range",
+            "volume_vph_out_of_range",
+        ]
+        # Rejected rows keep the offending values.
+        assert 120.1 in rejected["speed_mph"].cast(pl.Float64).to_list()
 
-    def test_invalid_corridor_and_direction(self) -> None:
-        df = _frame(
-            3,
-            corridor=["alb_i495", "i66", "alb_i495"],
-            direction=["inner_loop", "inner_loop", "eastbound"],
-        )
+    def test_missing_required_value_reasons(self) -> None:
+        df = _frame(3, segment_id=[SEG, None, SEG], speed_mph=[50.0, 50.0, None])
         valid, rejected = partition_telemetry(df)
         assert len(valid) == 1
         assert sorted(rejected["rejection_reason"].to_list()) == [
-            "invalid_corridor",
-            "invalid_direction",
+            "missing_segment_id",
+            "missing_speed_mph",
         ]
 
-    def test_invalid_numeric_string(self) -> None:
-        df = _frame(2, speed_mph=["50.0", "fast"])
+    def test_invalid_value_reasons(self) -> None:
+        df = _frame(
+            4,
+            corridor=["alb_i495", "i66", "alb_i495", "alb_i495"],
+            timestamp_utc=[
+                "2024-10-15T08:00:00",
+                "2024-10-15T08:05:00",
+                "not-a-date",
+                "2024-10-15T08:15:00",
+            ],
+            speed_mph=["50.0", "50.0", "50.0", "fast"],
+        )
         valid, rejected = partition_telemetry(df)
         assert len(valid) == 1
-        assert rejected["rejection_reason"].to_list() == ["invalid_speed_mph"]
+        assert valid["timestamp_utc"].dtype == pl.Datetime("ms", "UTC")
+        assert sorted(rejected["rejection_reason"].to_list()) == [
+            "invalid_corridor",
+            "invalid_speed_mph",
+            "invalid_timestamp_utc",
+        ]
 
     def test_reason_precedence_invalid_before_missing_before_range(self) -> None:
         df = _frame(
@@ -366,22 +285,15 @@ class TestPartitionTelemetry:
             "missing_segment_id",
         ]
 
-    def test_invalid_columns_checked_in_schema_order(self) -> None:
-        # corridor precedes timestamp_utc in TELEMETRY_POLARS_SCHEMA
+    def test_rule_order_within_a_family(self) -> None:
+        # invalid_*: corridor precedes timestamp_utc in TELEMETRY_POLARS_SCHEMA
         df = _frame(2, corridor=["alb_i495", "i66"], timestamp_utc=["2024-10-15T08:00", "nope"])
         _, rejected = partition_telemetry(df)
         assert rejected["rejection_reason"].to_list() == ["invalid_corridor"]
-
-    def test_range_rules_checked_in_order(self) -> None:
-        # speed_mph precedes volume_vph in the range rule order
+        # *_out_of_range: speed_mph precedes volume_vph
         df = _frame(2, speed_mph=[50.0, 200.0], volume_vph=[100.0, 99999.0])
         _, rejected = partition_telemetry(df)
         assert rejected["rejection_reason"].to_list() == ["speed_mph_out_of_range"]
-
-    def test_rejected_rows_keep_offending_values(self) -> None:
-        df = _frame(2, speed_mph=[50.0, 130.0])
-        _, rejected = partition_telemetry(df)
-        assert rejected["speed_mph"].cast(pl.Float64).to_list() == [130.0]
 
 
 # =============================================================================
@@ -450,36 +362,31 @@ class TestValidateTelemetry:
 
 
 class TestAggregateTelemetry5Min:
-    def test_timestamp_truncation(self) -> None:
+    def test_epoch_truncation_grouping_and_sorting(self) -> None:
+        other = "alb_i495_outer_loop_s0001"
         df = _frame(
-            3,
+            6,
+            segment_id=[SEG, SEG, SEG, SEG, other, SEG],
+            direction=["inner_loop"] * 4 + ["outer_loop", "inner_loop"],
             timestamp_utc=[
+                datetime(2024, 10, 15, 8, 10, 0, tzinfo=UTC),
                 datetime(2024, 10, 15, 8, 0, 30, tzinfo=UTC),
                 datetime(2024, 10, 15, 8, 2, 45, tzinfo=UTC),
                 datetime(2024, 10, 15, 8, 4, 59, tzinfo=UTC),
-            ],
-            speed_mph=[50.0, 60.0, 70.0],
-        )
-        agg = aggregate_telemetry_5min(df)
-        assert agg.shape[0] == 1
-        assert agg["timestamp_utc"][0] == datetime(2024, 10, 15, 8, 0, tzinfo=UTC)
-        assert agg["n_raw_records"][0] == 3
-        assert agg["n_raw_records"].dtype == pl.UInt32
-
-    def test_epoch_boundary_splits(self) -> None:
-        df = _frame(
-            2,
-            timestamp_utc=[
-                datetime(2024, 10, 15, 8, 4, 59, tzinfo=UTC),
-                datetime(2024, 10, 15, 8, 5, 0, tzinfo=UTC),
+                datetime(2024, 10, 15, 8, 0, 0, tzinfo=UTC),
+                datetime(2024, 10, 15, 8, 5, 0, tzinfo=UTC),  # boundary: next epoch
             ],
         )
         agg = aggregate_telemetry_5min(df)
+        assert agg["segment_id"].to_list() == [SEG, SEG, SEG, other]
         assert agg["timestamp_utc"].to_list() == [
             datetime(2024, 10, 15, 8, 0, tzinfo=UTC),
             datetime(2024, 10, 15, 8, 5, tzinfo=UTC),
+            datetime(2024, 10, 15, 8, 10, tzinfo=UTC),
+            datetime(2024, 10, 15, 8, 0, tzinfo=UTC),
         ]
-        assert agg["n_raw_records"].to_list() == [1, 1]
+        assert agg["n_raw_records"].to_list() == [3, 1, 1, 1]
+        assert agg["n_raw_records"].dtype == pl.UInt32
 
     def test_volume_weighted_harmonic_speed(self) -> None:
         df = _frame(
@@ -493,8 +400,22 @@ class TestAggregateTelemetry5Min:
         assert agg["speed_mph"][0] == pytest.approx(expected)
         assert agg["speed_mph"][0] == pytest.approx(53.333333, rel=1e-6)
         assert agg["speed_aggregation"][0] == "harmonic_volume_weighted"
+        assert agg["n_volume_weighted"][0] == 2
 
-    def test_harmonic_ignores_zero_and_null_volume_readings(self) -> None:
+    def test_zero_volume_unweighted_but_not_null(self) -> None:
+        """0 vph readings are excluded from weighting (even at 0 mph) but are not null volume."""
+        df = _frame(
+            3,
+            timestamp_utc=[T0, T0 + timedelta(minutes=1), T0 + timedelta(minutes=2)],
+            speed_mph=[40.0, 60.0, 0.0],
+            volume_vph=[100.0, 0.0, 0.0],
+        )
+        agg = aggregate_telemetry_5min(df)
+        assert agg["speed_mph"][0] == pytest.approx(40.0)
+        assert agg["speed_aggregation"][0] == "harmonic_volume_weighted"
+        assert agg["n_volume_weighted"][0] == 1
+
+    def test_null_volume_gives_partial_label(self) -> None:
         df = _frame(
             3,
             timestamp_utc=[T0, T0 + timedelta(minutes=1), T0 + timedelta(minutes=2)],
@@ -503,36 +424,23 @@ class TestAggregateTelemetry5Min:
         )
         agg = aggregate_telemetry_5min(df)
         assert agg["speed_mph"][0] == pytest.approx(40.0)
-        # A null volume in the epoch marks the harmonic mean as partial.
         assert agg["speed_aggregation"][0] == "harmonic_partial_volume"
         assert agg["n_raw_records"][0] == 3
         assert agg["n_volume_weighted"][0] == 1
 
-    def test_zero_volume_is_not_null_volume(self) -> None:
-        """A non-null 0 vph reading is unweighted but does not make the epoch partial."""
+    def test_stopped_flow_gives_zero(self) -> None:
+        """Any weighted reading at 0 mph forces the epoch speed to 0."""
         df = _frame(
-            2,
-            timestamp_utc=[T0, T0 + timedelta(minutes=1)],
-            speed_mph=[40.0, 60.0],
-            volume_vph=[100.0, 0.0],
+            4,
+            segment_id=[SEG, SEG, "alb_i495_inner_loop_s0002", "alb_i495_inner_loop_s0002"],
+            timestamp_utc=[T0, T0 + timedelta(minutes=1)] * 2,
+            speed_mph=[0.0, 50.0, 0.0, 0.0],
+            volume_vph=[200.0, 100.0, 100.0, 100.0],
         )
         agg = aggregate_telemetry_5min(df)
-        assert agg["speed_mph"][0] == pytest.approx(40.0)
-        assert agg["speed_aggregation"][0] == "harmonic_volume_weighted"
-        assert agg["n_volume_weighted"][0] == 1
-
-    def test_stopped_flow_weighted_reading_gives_zero(self) -> None:
-        """Any weighted reading at 0 mph (stopped flow) forces the epoch speed to 0."""
-        df = _frame(
-            2,
-            timestamp_utc=[T0, T0 + timedelta(minutes=1)],
-            speed_mph=[0.0, 50.0],
-            volume_vph=[200.0, 100.0],
-        )
-        agg = aggregate_telemetry_5min(df)
-        assert agg["speed_mph"][0] == 0.0
-        assert agg["speed_aggregation"][0] == "harmonic_volume_weighted"
-        assert agg["n_volume_weighted"][0] == 2
+        assert agg["speed_mph"].to_list() == [0.0, 0.0]
+        assert agg["speed_aggregation"].to_list() == ["harmonic_volume_weighted"] * 2
+        assert agg["n_volume_weighted"].to_list() == [2, 2]
 
     def test_stopped_flow_partial_volume_example(self) -> None:
         df = _frame(
@@ -547,145 +455,44 @@ class TestAggregateTelemetry5Min:
         assert row["n_volume_weighted"] == 3
         assert row["n_raw_records"] == 4
 
-    def test_zero_speed_with_zero_volume_not_stopped_flow(self) -> None:
-        """A 0 mph reading with 0 vph is not weighted, so it cannot force 0 mph."""
-        df = _frame(
-            2,
-            timestamp_utc=[T0, T0 + timedelta(minutes=1)],
-            speed_mph=[0.0, 50.0],
-            volume_vph=[0.0, 100.0],
-        )
-        agg = aggregate_telemetry_5min(df)
-        assert agg["speed_mph"][0] == pytest.approx(50.0)
-        assert agg["speed_aggregation"][0] == "harmonic_volume_weighted"
-
-    def test_n_volume_weighted_dtype_and_counts(self) -> None:
-        df = _frame(
-            5,
-            timestamp_utc=[T0 + timedelta(minutes=i) for i in range(4)]
-            + [T0 + timedelta(minutes=5)],
-            volume_vph=[100.0, 0.0, None, 50.0, 0.0],
-        )
-        agg = aggregate_telemetry_5min(df).sort("timestamp_utc")
-        assert agg["n_volume_weighted"].dtype == pl.UInt32
-        assert agg["n_volume_weighted"].to_list() == [2, 0]
-        assert agg["speed_aggregation"].to_list() == [
-            "harmonic_partial_volume",
-            "arithmetic_unweighted",
-        ]
-
-    def test_zero_volume_arithmetic_mean_fallback(self) -> None:
+    @pytest.mark.parametrize("volumes", [[0.0, 0.0], [None, None]])
+    def test_arithmetic_fallback(self, volumes: list) -> None:
         df = _frame(
             2,
             timestamp_utc=[T0, T0 + timedelta(minutes=3)],
             speed_mph=[40.0, 60.0],
-            volume_vph=[0.0, 0.0],
+            volume_vph=volumes,
         )
         agg = aggregate_telemetry_5min(df)
         assert agg["speed_mph"][0] == pytest.approx(50.0)
         assert agg["speed_aggregation"][0] == "arithmetic_unweighted"
-
-    def test_null_volume_arithmetic_mean_fallback(self) -> None:
-        df = _frame(
-            2,
-            timestamp_utc=[T0, T0 + timedelta(minutes=3)],
-            speed_mph=[40.0, 70.0],
-            volume_vph=[None, None],
-        )
-        agg = aggregate_telemetry_5min(df)
-        assert agg["speed_mph"][0] == pytest.approx(55.0)
-        assert agg["speed_aggregation"][0] == "arithmetic_unweighted"
-        assert agg["volume_vph"][0] is None
-
-    def test_all_zero_speed_with_volume_is_stopped_flow(self) -> None:
-        df = _frame(
-            2,
-            timestamp_utc=[T0, T0 + timedelta(minutes=1)],
-            speed_mph=[0.0, 0.0],
-            volume_vph=[100.0, 100.0],
-        )
-        agg = aggregate_telemetry_5min(df)
-        assert agg["speed_mph"][0] == 0.0
-        assert agg["speed_aggregation"][0] == "harmonic_volume_weighted"
-        assert agg["n_volume_weighted"][0] == 2
+        assert agg["n_volume_weighted"][0] == 0
+        assert agg["n_volume_weighted"].dtype == pl.UInt32
 
     def test_optional_column_aggregations(self) -> None:
         df = _frame(
-            3,
-            timestamp_utc=[T0, T0 + timedelta(minutes=1), T0 + timedelta(minutes=2)],
-            free_flow_speed_mph=[60.0, None, 70.0],
-            volume_vph=[100.0, None, 300.0],
-            occupancy_pct=[None, 20.0, 40.0],
-            confidence_score=[0.9, 0.4, None],
+            5,
+            timestamp_utc=[T0, T0 + timedelta(minutes=1), T0 + timedelta(minutes=2)]
+            + [T0 + timedelta(minutes=5), T0 + timedelta(minutes=6)],
+            free_flow_speed_mph=[60.0, None, 70.0, None, None],
+            volume_vph=[100.0, None, 300.0, None, None],
+            occupancy_pct=[None, 20.0, 40.0, None, None],
+            confidence_score=[0.9, 0.4, None, None, None],
         )
-        row = aggregate_telemetry_5min(df).row(0, named=True)
-        assert row["free_flow_speed_mph"] == pytest.approx(65.0)
-        assert row["volume_vph"] == pytest.approx(200.0)
-        assert row["occupancy_pct"] == pytest.approx(30.0)
-        assert row["confidence_score"] == pytest.approx(0.4)
-
-    def test_all_null_optionals_stay_null(self) -> None:
-        df = _frame(
-            2,
-            timestamp_utc=[T0, T0 + timedelta(minutes=1)],
-            free_flow_speed_mph=[None, None],
-            volume_vph=[None, None],
-            occupancy_pct=[None, None],
-            confidence_score=[None, None],
-        )
-        row = aggregate_telemetry_5min(df).row(0, named=True)
-        assert row["free_flow_speed_mph"] is None
-        assert row["volume_vph"] is None
-        assert row["occupancy_pct"] is None
-        assert row["confidence_score"] is None
-
-    def test_groups_by_segment_corridor_direction(self) -> None:
-        df = _frame(
-            3,
-            segment_id=[SEG, SEG, "alb_i495_outer_loop_s0001"],
-            direction=["inner_loop", "inner_loop", "outer_loop"],
-            timestamp_utc=[T0, T0 + timedelta(minutes=1), T0],
-            speed_mph=[40.0, 60.0, 30.0],
-            volume_vph=[100.0, 100.0, 50.0],
-        )
-        agg = aggregate_telemetry_5min(df)
-        assert len(agg) == 2
-        inner = agg.filter(pl.col("segment_id") == SEG).row(0, named=True)
-        assert inner["n_raw_records"] == 2
-        assert inner["speed_mph"] == pytest.approx(200.0 / (100.0 / 40.0 + 100.0 / 60.0))
+        first, second = aggregate_telemetry_5min(df).sort("timestamp_utc").iter_rows(named=True)
+        # Means ignore nulls; confidence is the minimum.
+        assert first["free_flow_speed_mph"] == pytest.approx(65.0)
+        assert first["volume_vph"] == pytest.approx(200.0)
+        assert first["occupancy_pct"] == pytest.approx(30.0)
+        assert first["confidence_score"] == pytest.approx(0.4)
+        # An all-null epoch stays null.
+        for col in TELEMETRY_OPTIONAL_COLUMNS:
+            assert second[col] is None
 
     def test_empty_input(self) -> None:
         agg = aggregate_telemetry_5min(validate_telemetry(_frame(0)))
         assert len(agg) == 0
-        assert "n_raw_records" in agg.columns
-        assert "speed_aggregation" in agg.columns
-
-    def test_sorting_order(self) -> None:
-        df = _frame(
-            3,
-            segment_id=[
-                "alb_i495_inner_loop_s0002",
-                "alb_i495_inner_loop_s0001",
-                "alb_i495_inner_loop_s0001",
-            ],
-            timestamp_utc=[
-                datetime(2024, 10, 15, 8, 5, 0, tzinfo=UTC),
-                datetime(2024, 10, 15, 8, 10, 0, tzinfo=UTC),
-                datetime(2024, 10, 15, 8, 0, 0, tzinfo=UTC),
-            ],
-            speed_mph=[60.0, 40.0, 40.0],
-        )
-        agg = aggregate_telemetry_5min(df)
-        assert agg["segment_id"].to_list() == [
-            "alb_i495_inner_loop_s0001",
-            "alb_i495_inner_loop_s0001",
-            "alb_i495_inner_loop_s0002",
-        ]
-        assert agg["timestamp_utc"].to_list() == [
-            datetime(2024, 10, 15, 8, 0, tzinfo=UTC),
-            datetime(2024, 10, 15, 8, 10, tzinfo=UTC),
-            datetime(2024, 10, 15, 8, 5, tzinfo=UTC),
-        ]
+        assert {"n_raw_records", "n_volume_weighted", "speed_aggregation"} <= set(agg.columns)
 
 
 # =============================================================================

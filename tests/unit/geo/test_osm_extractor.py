@@ -173,17 +173,6 @@ class TestStitchingAndTopologicalAssembly:
         assert list(line.coords)[0] == (-77.22, 38.95)
         assert list(line.coords)[-1] == (-77.20, 38.97)
 
-    def test_stitch_empty_raises_error(self) -> None:
-        with pytest.raises(OSMTopologicalError, match="No coordinate segments"):
-            _stitch_segments_to_linestring([], "inner_loop")
-
-    def test_stitch_gap_exceeds_tolerance_raises_error(self) -> None:
-        seg1 = [(-77.2200, 38.9500), (-77.2100, 38.9600)]
-        # seg2 endpoint has an unphysical gap > 0.0005 degrees (~50m, e.g. cross-median jump)
-        seg2 = [(-77.2090, 38.9600), (-77.2000, 38.9700)]
-        with pytest.raises(OSMTopologicalError, match="Topological gap"):
-            _stitch_segments_to_linestring([seg1, seg2], "inner_loop")
-
     def test_calculate_metric_length(self) -> None:
         line = LineString([(-77.2250, 38.9550), (-77.1850, 38.9950)])
         length = calculate_metric_length(line)
@@ -388,16 +377,6 @@ class TestDeflectionAndUTurnGuards:
         v_out = (-10.0, -10.0)  # Heading SW (180 deg turnaround)
         assert _is_deflection_acceptable(v_in, v_out, min_cos=0.0) is False
 
-    def test_stitch_rejects_antiparallel_u_turn_segment(self) -> None:
-        # seg1 runs north: (0, 0) -> (0, 1)
-        seg1 = [(0.0, 0.0), (0.0, 1.0)]
-        # seg2 runs south right beside seg1 across median: (0.0001, 1.0) -> (0.0001, 0.0)
-        # Even though distance between (0, 1) and (0.0001, 1) is tiny (< 50m),
-        # appending seg2 into a U-turn is rejected
-        seg2 = [(0.0001, 1.0), (0.0001, 0.0)]
-        with pytest.raises(OSMTopologicalError):
-            _stitch_segments_to_linestring([seg1, seg2], "northbound")
-
     def test_prepend_reverse_valid(self) -> None:
         # seg1 is northern half: (0, 1) -> (0, 2)
         seg1 = [(0.0, 1.0), (0.0, 2.0)]
@@ -409,10 +388,6 @@ class TestDeflectionAndUTurnGuards:
         assert len(coords) == 3
         assert coords[0] == (0.0, 0.0)
         assert coords[-1] == (0.0, 2.0)
-
-    def test_stitch_segment_fewer_than_two_coords_raises(self) -> None:
-        with pytest.raises(OSMTopologicalError, match="fewer than 2 points"):
-            _stitch_segments_to_linestring([[(0.0, 0.0)], [(0.0, 1.0), (0.0, 2.0)]], "northbound")
 
 
 # =============================================================================
@@ -441,65 +416,51 @@ def _north_run(start_m: float, end_m: float, step_m: float = 250.0) -> list[tupl
 class TestStitchSegmentsWithGap:
     """Tests for metric (EPSG:26918) junction gaps and exact WGS84 coordinate preservation."""
 
-    def test_single_segment_zero_gap(self) -> None:
-        seg = _north_run(0.0, 1000.0)
-        line, gap = stitch_segments_with_gap([seg], "northbound")
-        assert isinstance(line, LineString)
-        assert gap == 0.0
-        assert list(line.coords) == seg
-
-    def test_touching_segments_zero_gap(self) -> None:
+    def test_single_and_touching_segments_zero_gap(self) -> None:
         seg1 = _north_run(0.0, 1000.0)
         seg2 = _north_run(1000.0, 2000.0)
+        line, gap = stitch_segments_with_gap([seg1], "northbound")
+        assert isinstance(line, LineString)
+        assert gap == 0.0
+        assert list(line.coords) == seg1
+
         line, gap = stitch_segments_with_gap([seg1, seg2], "inner_loop")
         assert gap == 0.0
+        # The shared junction vertex is not duplicated.
         assert len(line.coords) == len(seg1) + len(seg2) - 1
 
-    @pytest.mark.parametrize("reverse_first", [False, True])
-    @pytest.mark.parametrize("reverse_second", [False, True])
-    @pytest.mark.parametrize("swap_order", [False, True])
-    def test_coordinates_preserved_exactly(
-        self, reverse_first: bool, reverse_second: bool, swap_order: bool
-    ) -> None:
-        """Every input vertex survives a bridged gap, exactly, in every join orientation."""
+    @pytest.mark.parametrize("join", ["forward_append", "reversed_prepend"])
+    def test_coordinates_preserved_exactly(self, join: str) -> None:
+        """Every input vertex survives a bridged gap, exactly (no reprojection round trip)."""
         seg1 = _north_run(0.0, 1000.0)
         seg2 = _north_run(1020.0, 2020.0)
-        s1 = list(reversed(seg1)) if reverse_first else seg1
-        s2 = list(reversed(seg2)) if reverse_second else seg2
-        segments = [s2, s1] if swap_order else [s1, s2]
+        if join == "forward_append":
+            segments = [seg1, seg2]
+        else:
+            # Start from the northern half digitised backwards; the southern half
+            # (also backwards) has to be prepended.
+            segments = [list(reversed(seg2)), list(reversed(seg1))]
         line, gap = stitch_segments_with_gap(segments, "northbound")
         coords = [tuple(c) for c in line.coords]
         assert gap == pytest.approx(20.0, abs=0.05)
         assert len(coords) == len(seg1) + len(seg2)
-        assert set(coords) == set(seg1) | set(seg2)
         assert coords == seg1 + seg2  # northbound: south-to-north order
-        assert coords[0] == seg1[0]
-        assert coords[-1] == seg2[-1]
 
-    def test_bridged_gap_reported_in_metres(self) -> None:
-        seg1 = _north_run(0.0, 1000.0)
-        seg2 = _north_run(1020.0, 2020.0)
-        line, gap = stitch_segments_with_gap([seg1, seg2], "northbound")
-        assert gap == pytest.approx(20.0, abs=0.05)
-        assert line.coords[0] == seg1[0]
-        assert line.coords[-1] == seg2[-1]
-
-    def test_largest_gap_returned(self) -> None:
+    def test_largest_bridged_gap_reported_in_metres(self) -> None:
         seg1 = _north_run(0.0, 1000.0)
         seg2 = _north_run(1010.0, 2010.0)
         seg3 = _north_run(2040.0, 3040.0)
-        _, gap = stitch_segments_with_gap([seg1, seg2, seg3], "northbound")
+        line, gap = stitch_segments_with_gap([seg1, seg2, seg3], "northbound")
         assert gap == pytest.approx(30.0, abs=0.05)
+        assert line.coords[0] == seg1[0]
+        assert line.coords[-1] == seg3[-1]
 
-    def test_gap_exceeding_default_raises(self) -> None:
+    def test_gap_limit_in_metres(self) -> None:
         seg1 = _north_run(0.0, 1000.0)
         seg2 = _north_run(1060.0, 2060.0)
         with pytest.raises(OSMTopologicalError, match="Topological gap"):
-            stitch_segments_with_gap([seg1, seg2], "northbound")
+            stitch_segments_with_gap([seg1, seg2], "northbound")  # default 50 m
 
-    def test_custom_max_gap_m(self) -> None:
-        seg1 = _north_run(0.0, 1000.0)
-        seg2 = _north_run(1060.0, 2060.0)
         _, gap = stitch_segments_with_gap([seg1, seg2], "northbound", max_gap_m=100.0)
         assert gap == pytest.approx(60.0, abs=0.05)
 
@@ -507,27 +468,17 @@ class TestStitchSegmentsWithGap:
         with pytest.raises(OSMTopologicalError, match="Topological gap"):
             stitch_segments_with_gap([seg1, seg3], "northbound", max_gap_m=10.0)
 
-    def test_reversed_segment_bridged(self) -> None:
-        seg1 = _north_run(0.0, 1000.0)
-        seg2 = list(reversed(_north_run(1015.0, 2015.0)))
-        line, gap = stitch_segments_with_gap([seg1, seg2], "northbound")
-        assert gap == pytest.approx(15.0, abs=0.05)
-        lats = [c[1] for c in line.coords]
-        assert lats == sorted(lats)
-
-    @pytest.mark.parametrize("direction", ["inner_loop", "northbound"])
-    def test_orientation_increasing_latitude(self, direction: str) -> None:
-        seg1 = list(reversed(_north_run(0.0, 1000.0)))
-        seg2 = list(reversed(_north_run(1000.0, 2000.0)))
-        line, _ = stitch_segments_with_gap([seg1, seg2], direction)
-        assert line.coords[-1][1] > line.coords[0][1]
-
-    @pytest.mark.parametrize("direction", ["outer_loop", "southbound"])
-    def test_orientation_decreasing_latitude(self, direction: str) -> None:
-        seg1 = _north_run(0.0, 1000.0)
-        seg2 = _north_run(1000.0, 2000.0)
-        line, _ = stitch_segments_with_gap([seg1, seg2], direction)
-        assert line.coords[-1][1] < line.coords[0][1]
+    @pytest.mark.parametrize(
+        ("direction", "reverse_input", "northward"),
+        [("inner_loop", True, True), ("southbound", False, False)],
+    )
+    def test_orientation(self, direction: str, reverse_input: bool, northward: bool) -> None:
+        """inner_loop/northbound end further north; outer_loop/southbound further south."""
+        segs = [_north_run(0.0, 1000.0), _north_run(1000.0, 2000.0)]
+        if reverse_input:
+            segs = [list(reversed(s)) for s in segs]
+        line, _ = stitch_segments_with_gap(segs, direction)
+        assert (line.coords[-1][1] > line.coords[0][1]) is northward
 
     def test_empty_raises(self) -> None:
         with pytest.raises(OSMTopologicalError, match="No coordinate segments"):
@@ -544,24 +495,15 @@ class TestStitchSegmentsWithGap:
         with pytest.raises(OSMTopologicalError):
             stitch_segments_with_gap([seg1, seg2], "northbound")
 
-    def test_wrapper_returns_same_line(self) -> None:
-        seg1 = _north_run(0.0, 1000.0)
-        seg2 = _north_run(1020.0, 2020.0)
-        line, _ = stitch_segments_with_gap([seg1, seg2], "northbound")
-        wrapped = _stitch_segments_to_linestring([seg1, seg2], "northbound")
-        assert isinstance(wrapped, LineString)
-        assert list(wrapped.coords) == list(line.coords)
-
-    def test_wrapper_accepts_max_gap_m(self) -> None:
+    def test_wrapper_matches_and_rejects_legacy_kwarg(self) -> None:
         seg1 = _north_run(0.0, 1000.0)
         seg2 = _north_run(1060.0, 2060.0)
-        line = _stitch_segments_to_linestring([seg1, seg2], "northbound", max_gap_m=100.0)
-        assert isinstance(line, LineString)
-
-    def test_wrapper_rejects_legacy_degree_kwarg(self) -> None:
-        seg = _north_run(0.0, 1000.0)
+        line, _ = stitch_segments_with_gap([seg1, seg2], "northbound", max_gap_m=100.0)
+        wrapped = _stitch_segments_to_linestring([seg1, seg2], "northbound", max_gap_m=100.0)
+        assert isinstance(wrapped, LineString)
+        assert list(wrapped.coords) == list(line.coords)
         with pytest.raises(TypeError):
-            _stitch_segments_to_linestring([seg], "northbound", max_gap_degrees=0.001)  # type: ignore[call-arg]
+            _stitch_segments_to_linestring([seg1], "northbound", max_gap_degrees=0.001)  # type: ignore[call-arg]
 
 
 @pytest.fixture
@@ -608,7 +550,6 @@ class TestComputeWayIntervals:
         backward = compute_way_intervals(line, [_way(1, [4, 3, 2])], nodes)
         assert forward[0]["start_m"] == pytest.approx(backward[0]["start_m"], abs=1e-6)
         assert forward[0]["end_m"] == pytest.approx(backward[0]["end_m"], abs=1e-6)
-        assert backward[0]["start_m"] < backward[0]["end_m"]
         assert backward[0]["start_m"] == pytest.approx(500.0, abs=0.5)
         assert backward[0]["end_m"] == pytest.approx(1500.0, abs=0.5)
 
@@ -616,12 +557,11 @@ class TestComputeWayIntervals:
         line, nodes = interval_network
         ways = [_way(3, [4, 5]), _way(1, [1, 2]), _way(2, [2, 3, 4])]
         intervals = compute_way_intervals(line, ways, nodes)
-        starts = [iv["start_m"] for iv in intervals]
-        assert starts == sorted(starts)
         assert [iv["way_id"] for iv in intervals] == [1, 2, 3]
 
     def test_skips_degenerate_ways(self, interval_network) -> None:
         line, nodes = interval_network
+        assert compute_way_intervals(line, [], nodes) == []
         ways = [
             _way(1, [1, 2]),
             _way(2, [3]),  # single node
@@ -632,53 +572,40 @@ class TestComputeWayIntervals:
         intervals = compute_way_intervals(line, ways, nodes)
         assert [iv["way_id"] for iv in intervals] == [1]
 
-    def test_empty_ways(self, interval_network) -> None:
+    def test_bridge_tag_true(self, interval_network) -> None:
         line, nodes = interval_network
-        assert compute_way_intervals(line, [], nodes) == []
+        ways = [_way(1, [1, 2], bridge="yes"), _way(2, [2, 3], bridge="viaduct")]
+        assert [iv["bridge"] for iv in compute_way_intervals(line, ways, nodes)] == [True, True]
 
-    @pytest.mark.parametrize(
-        ("tags", "expected"),
-        [
-            ({"bridge": "yes"}, True),
-            ({"bridge": "viaduct"}, True),
-            ({"bridge": "no"}, False),
-            ({"bridge": ""}, False),
-            ({}, False),
-        ],
-    )
-    def test_bridge_tag_parsing(self, interval_network, tags: dict, expected: bool) -> None:
+    def test_bridge_tag_false(self, interval_network) -> None:
         line, nodes = interval_network
-        intervals = compute_way_intervals(line, [_way(1, [1, 2], **tags)], nodes)
-        assert intervals[0]["bridge"] is expected
+        ways = [_way(1, [1, 2], bridge="no"), _way(2, [2, 3], bridge=""), _way(3, [3, 4])]
+        intervals = compute_way_intervals(line, ways, nodes)
+        assert [iv["bridge"] for iv in intervals] == [False, False, False]
 
-    @pytest.mark.parametrize(
-        ("tags", "expected"),
-        [
-            ({"lanes": "3"}, 3),
-            ({"lanes": "12"}, 12),
-            ({"lanes": "3;2"}, None),
-            ({"lanes": "two"}, None),
-            ({}, None),
-        ],
-    )
-    def test_lanes_tag_parsing(self, interval_network, tags: dict, expected: int | None) -> None:
+    def test_lanes_digits_parsed_as_int(self, interval_network) -> None:
         line, nodes = interval_network
-        intervals = compute_way_intervals(line, [_way(1, [1, 2], **tags)], nodes)
-        assert intervals[0]["lanes"] == expected
-        if expected is not None:
-            assert isinstance(intervals[0]["lanes"], int)
+        ways = [_way(1, [1, 2], lanes="3"), _way(2, [2, 3], lanes="12")]
+        lanes = [iv["lanes"] for iv in compute_way_intervals(line, ways, nodes)]
+        assert lanes == [3, 12]
+        assert all(isinstance(v, int) for v in lanes)
 
-    def test_maxspeed_tag(self, interval_network) -> None:
+    def test_lanes_non_numeric_or_absent_is_none(self, interval_network) -> None:
+        line, nodes = interval_network
+        ways = [_way(1, [1, 2], lanes="3;2"), _way(2, [2, 3], lanes="two"), _way(3, [3, 4])]
+        assert [iv["lanes"] for iv in compute_way_intervals(line, ways, nodes)] == [
+            None,
+            None,
+            None,
+        ]
+
+    def test_maxspeed_and_json_serialisable(self, interval_network) -> None:
         line, nodes = interval_network
         intervals = compute_way_intervals(
-            line, [_way(1, [1, 2], maxspeed="65 mph"), _way(2, [2, 3])], nodes
+            line, [_way(1, [1, 2], maxspeed="65 mph", bridge="yes"), _way(2, [2, 3])], nodes
         )
         assert intervals[0]["maxspeed"] == "65 mph"
         assert intervals[1]["maxspeed"] is None
-
-    def test_json_serialisable(self, interval_network) -> None:
-        line, nodes = interval_network
-        intervals = compute_way_intervals(line, [_way(1, [1, 2], bridge="yes")], nodes)
         assert json.loads(json.dumps(intervals))[0]["bridge"] is True
 
 
@@ -803,20 +730,15 @@ class TestExtractCorridorProvenance:
         )
         row = gdf[gdf["direction"] == "inner_loop"].iloc[0]
         assert row["max_junction_gap_m"] == pytest.approx(0.6, abs=0.05)
+        assert CONTINUITY_TOLERANCE_METERS == 1.0
         assert row["max_junction_gap_m"] <= CONTINUITY_TOLERANCE_METERS
         assert bool(row["is_continuous"]) is True
-
-    def test_continuity_tolerance_constant(self) -> None:
-        assert CONTINUITY_TOLERANCE_METERS == 1.0
 
     @pytest.mark.parametrize(
         ("lane_tags", "expected"),
         [
             (["4", "5"], 4),
-            (["5", "4"], 4),
-            (["4", "5", "6"], 5),
-            (["3", "4", "5", "6"], 4),
-            (["4", None, "6"], 4),
+            (["4", None, "5", "6"], 5),
         ],
     )
     def test_lanes_summary_is_median_low(

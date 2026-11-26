@@ -323,19 +323,24 @@ def _three_way_intervals() -> list[dict]:
 class TestAssignStationWayAttributes:
     """Tests for interval lookup of has_bridge / lanes / maxspeed per station chainage."""
 
-    def test_keys_and_alignment(self) -> None:
-        chainages = np.array([0.0, 100.0, 3700.0, 4500.0])
+    def test_values_inherited_and_aligned(self) -> None:
+        chainages = np.array([100.0, 3700.0, 4000.0, 4500.0])
         out = assign_station_way_attributes(chainages, _three_way_intervals())
         assert set(out.keys()) == {"has_bridge", "lanes", "maxspeed"}
         for values in out.values():
             assert len(values) == len(chainages)
-
-    def test_values_inherited_from_containing_interval(self) -> None:
-        chainages = np.array([100.0, 3700.0, 4000.0, 4500.0])
-        out = assign_station_way_attributes(chainages, _three_way_intervals())
         assert [bool(v) for v in out["has_bridge"]] == [False, True, True, False]
         assert out["lanes"] == [4, 5, 5, None]
         assert out["maxspeed"] == ["55 mph", "65 mph", "65 mph", None]
+
+    def test_empty_inputs(self) -> None:
+        out = assign_station_way_attributes(np.array([0.0, 100.0, 200.0]), [])
+        assert [bool(v) for v in out["has_bridge"]] == [False, False, False]
+        assert out["lanes"] == [None, None, None]
+        assert out["maxspeed"] == [None, None, None]
+
+        out = assign_station_way_attributes(np.array([], dtype=float), _three_way_intervals())
+        assert all(list(out[k]) == [] for k in ("has_bridge", "lanes", "maxspeed"))
 
     def test_bounds_inclusive(self) -> None:
         intervals = [
@@ -375,18 +380,6 @@ class TestAssignStationWayAttributes:
             np.array([BRIDGE_START_M, BRIDGE_END_M, 3000.0]), _three_way_intervals()
         )
         assert [bool(v) for v in out["has_bridge"]] == [True, True, False]
-
-    def test_empty_intervals(self) -> None:
-        out = assign_station_way_attributes(np.array([0.0, 100.0, 200.0]), [])
-        assert [bool(v) for v in out["has_bridge"]] == [False, False, False]
-        assert out["lanes"] == [None, None, None]
-        assert out["maxspeed"] == [None, None, None]
-
-    def test_empty_chainages(self) -> None:
-        out = assign_station_way_attributes(np.array([], dtype=float), _three_way_intervals())
-        assert list(out["has_bridge"]) == []
-        assert list(out["lanes"]) == []
-        assert list(out["maxspeed"]) == []
 
     def test_unsorted_intervals(self) -> None:
         out = assign_station_way_attributes(
